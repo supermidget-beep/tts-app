@@ -46,7 +46,7 @@
     <!-- Package-visibility (Android 11+/API 30+) declarations needed for
          android.speech.tts.TextToSpeech to find/bind an engine, and for
          NativeTtsPlugin's openInstall() to resolve the voice-data install
-         screen -- without these, PackageManager queries for both can
+         screen. Without these, PackageManager queries for both can
          silently come back empty even though a TTS engine is installed. -->
     <queries>
         <intent>
