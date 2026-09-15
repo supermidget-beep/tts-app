@@ -202,11 +202,13 @@ export class TtsController {
     // the previous runLoop call hasn't unwound yet (its cancelled
     // Promise.race only resolves on a later microtask), so a same-tick
     // guard would see a stale "still running" and silently no-op the
-    // restart. The generation check below is what actually keeps only
-    // one loop's iterations taking effect; the native plugin's speak()
-    // itself flushes any prior utterance, so an old loop's very next
-    // chunk (if it sneaks out before seeing the generation bump) is a
-    // harmless no-op at the engine level too.
+    // restart. The generation check below (right after each await) is
+    // what keeps only one loop's iterations taking effect: a superseded
+    // loop always hits that check and returns before it could speak()
+    // again, so it never gets a chance to queue a stray chunk behind the
+    // new loop's -- important now that chunks use QueueStrategy.Add
+    // rather than Flush (see below), since Add no longer auto-clears
+    // whatever a stale caller might otherwise queue.
     const myGeneration = this.generation;
     while (this.chunkIndex < this.chunks.length) {
       this.reportParagraph();
@@ -221,7 +223,15 @@ export class TtsController {
         rate: this.rate,
         pitch: this.pitch,
         voice: this.voiceIndex ?? undefined,
-        queueStrategy: QueueStrategy.Flush,
+        // Add, not Flush: the native plugin's speak() calls the engine's
+        // stop() first for any non-Add request, and that stop() can clip
+        // the tail end of the PREVIOUS chunk's audio if it fires just as
+        // playback is finishing -- heard as the last word of a sentence
+        // getting cut off, right at each chunk boundary. interrupt()
+        // already calls stop() explicitly for real interruptions (pause/
+        // stop/skip/rate-pitch-voice change), so plain continuation here
+        // never needs the engine to stop anything itself.
+        queueStrategy: QueueStrategy.Add,
       })
         .then(() => "done" as const)
         .catch(() => "error" as const);
