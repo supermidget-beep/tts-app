@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { getApiBase, setApiBase } from "../lib/config";
 import { getVoices } from "../lib/tts";
 import { useTtsSettings } from "../lib/useTtsSettings";
 
@@ -7,6 +8,8 @@ export function Settings() {
   const navigate = useNavigate();
   const { settings, update, loaded } = useTtsSettings();
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [apiBaseInput, setApiBaseInput] = useState(() => getApiBase());
+  const [apiBaseSaved, setApiBaseSaved] = useState(false);
 
   useEffect(() => {
     getVoices().then(setVoices);
@@ -22,6 +25,29 @@ export function Settings() {
         </button>
         <h1>Settings</h1>
       </header>
+
+      <form
+        className="settings-row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setApiBase(apiBaseInput);
+          setApiBaseSaved(true);
+          setTimeout(() => setApiBaseSaved(false), 2000);
+        }}
+      >
+        Backend server URL
+        <input
+          type="url"
+          placeholder="https://your-backend.onrender.com"
+          value={apiBaseInput}
+          onChange={(e) => setApiBaseInput(e.target.value)}
+        />
+        <button type="submit">{apiBaseSaved ? "Saved ✓" : "Save"}</button>
+        <span className="hint">
+          The address of the extraction API from the server/ folder (see the README for
+          deploying it). Chapters can't be fetched until this is set.
+        </span>
+      </form>
 
       <p className="hint">
         These are the defaults used for new chapters. You can still adjust speed and pitch

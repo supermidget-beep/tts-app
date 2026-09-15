@@ -19,14 +19,19 @@ export interface TocData {
   chapters: TocChapter[];
 }
 
-// Configure via VITE_API_BASE_URL at build time (see README). Falls back to
-// same-origin /api, which works when the backend is reverse-proxied behind
-// the same host as the static app.
-const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
+import { getApiBase } from "./config";
+
+export class NoApiBaseError extends Error {
+  constructor() {
+    super("No backend server configured. Set it in Settings.");
+  }
+}
 
 async function getJson<T>(path: string, params: Record<string, string>): Promise<T> {
+  const apiBase = getApiBase();
+  if (!apiBase) throw new NoApiBaseError();
   const qs = new URLSearchParams(params).toString();
-  const res = await fetch(`${API_BASE}${path}?${qs}`);
+  const res = await fetch(`${apiBase}${path}?${qs}`);
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new Error(body?.error ?? `Request failed with status ${res.status}`);

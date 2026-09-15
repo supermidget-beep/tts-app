@@ -79,40 +79,71 @@ chapter link…" box, or manually build a share-target URL like
 
 ## Deploying
 
-You need two things hosted:
+Two things need to be hosted, on two different services (this repo is
+already wired up for a specific free pair — Render + GitHub Pages — so
+this should mostly be pushing buttons rather than configuring things):
 
-1. **The backend** (`server/`) — anywhere that runs Node: Render, Fly.io,
-   Railway, a VPS, etc.
-   ```bash
-   npm run build:server
-   node server/dist/index.js   # reads PORT env var, defaults to 8787
-   ```
-2. **The web app** (`web/`) — any static host with **SPA fallback
-   routing** (rewrite all paths to `index.html`). This is required: the
-   share target's action path (`/share-target`) and the reader
-   (`/reader`) are real URLs the browser navigates to directly, not just
-   client-side routes.
-   - Netlify / Cloudflare Pages: `web/public/_redirects` is already set up.
-   - Vercel: `web/vercel.json` is already set up.
-   - Nginx: add `try_files $uri /index.html;`.
+### 1. Backend (`server/`) → Render
 
-   Build with the backend's public URL baked in:
-   ```bash
-   VITE_API_BASE_URL=https://your-api.example.com npm run build:web
-   ```
-   Deploy the contents of `web/dist/`.
+[`render.yaml`](./render.yaml) is a Render "blueprint" that deploys the
+backend with no manual configuration. Click:
 
-**The web app must be served over HTTPS** (installability and the share
-target both require it — `localhost` is exempt, which is why local dev
-works over plain HTTP).
+**[Deploy to Render](https://render.com/deploy?repo=https://github.com/supermidget-beep/tts-app)**
+
+Sign in with GitHub (free), confirm the branch (`claude/wuxia-tts-reader-app-wtsz9b`,
+unless it's since been merged to `main`), and click **Apply**. Render
+builds and starts the backend and gives it a URL like
+`https://wuxia-tts-reader-api.onrender.com` (or the same with a random
+suffix if that exact name is taken). Note the URL — you'll enter it into
+the app in the last step. The free plan sleeps after inactivity, so the
+first request after a while takes ~30–60s to wake it back up.
+
+### 2. Web app (`web/`) → GitHub Pages
+
+A workflow ([`.github/workflows/deploy-pages.yml`](./.github/workflows/deploy-pages.yml))
+already builds and deploys `web/` to GitHub Pages on every push. One-time
+setup: in this repo, go to **Settings → Pages → Build and deployment →
+Source**, and select **GitHub Actions**. After that (and after the
+workflow has run once, from Actions tab, or automatically on the next
+push), the app is live at:
+
+```
+https://supermidget-beep.github.io/tts-app/
+```
+
+(GitHub Pages project sites live under `/<repo-name>/`, not the domain
+root — the app is already configured for that.) It's served over HTTPS
+automatically, which installability and the share target both require.
+
+The workflow bakes in `https://wuxia-tts-reader-api.onrender.com` as the
+backend URL by default. If Render gave you a different URL (a name
+collision added a suffix), open the installed app → **Settings** and
+paste the real URL into **Backend server URL** — this is read at runtime
+from on-device storage, so no redeploy is needed to fix it.
+
+### Deploying somewhere else instead
+
+Any Node host works for the backend (Fly.io, Railway, a VPS, ...):
+`npm run build:server && node server/dist/index.js` (reads `PORT`,
+defaults to 8787). Any static host with **SPA fallback routing** (rewrite
+unmatched paths to `index.html`) works for the web app — `web/public/_redirects`
+(Netlify/Cloudflare Pages) and `web/vercel.json` (Vercel) are already set
+up; for Nginx, add `try_files $uri /index.html;`. If it's not served under
+a subpath, build with `npm run build:web` as-is; under a subpath, set
+`VITE_BASE_PATH=/your-subpath/` first. Either way, the backend URL can
+always be set/changed afterwards from the app's Settings page — you don't
+have to get it right at build time.
 
 ## Installing on Android
 
-1. Open the deployed web app's URL in Chrome on Android.
+1. Open `https://supermidget-beep.github.io/tts-app/` in Chrome on Android.
 2. Chrome's menu → **Add to Home screen** (or **Install app**). This is
    what registers it as a share target — a page you've only visited,
    without installing, won't show up in the share sheet.
-3. In Chrome, open any chapter of a novel, tap **Share**, and choose
+3. Open the app once from the home screen and check **Settings** → the
+   backend server URL should already be filled in (from the build
+   default); fix it there if Render gave your backend a different URL.
+4. In Chrome, open any chapter of a novel, tap **Share**, and choose
    **Wuxia Reader** from the list of apps/targets. It opens straight into
    the reader and starts reading.
 

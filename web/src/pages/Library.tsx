@@ -1,14 +1,17 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { hasApiBase } from "../lib/config";
 import { deleteBook, listBooks, type BookRecord } from "../lib/storage";
 
 export function Library() {
   const [books, setBooks] = useState<BookRecord[]>([]);
   const [manualUrl, setManualUrl] = useState("");
+  const [apiConfigured, setApiConfigured] = useState(true);
   const navigate = useNavigate();
 
   useEffect(() => {
     listBooks().then(setBooks);
+    setApiConfigured(hasApiBase());
   }, []);
 
   const openUrl = (url: string) => {
@@ -28,6 +31,15 @@ export function Library() {
           ⚙
         </button>
       </header>
+
+      {!apiConfigured && (
+        <p className="status error setup-notice">
+          Set up the backend server before you can open chapters.{" "}
+          <button type="button" onClick={() => navigate("/settings")}>
+            Go to Settings
+          </button>
+        </p>
+      )}
 
       <form
         className="manual-add"

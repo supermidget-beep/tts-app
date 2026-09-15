@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { fetchChapter, fetchToc, type ChapterData, type TocChapter } from "../lib/api";
+import { fetchChapter, fetchToc, NoApiBaseError, type ChapterData, type TocChapter } from "../lib/api";
 import { TtsController, getVoices, type PlaybackState } from "../lib/tts";
 import { saveBookChapters, updateBookPosition, upsertBookFromChapter } from "../lib/storage";
 import { useTtsSettings } from "../lib/useTtsSettings";
@@ -17,6 +17,7 @@ export function Reader() {
   const [chapters, setChapters] = useState<TocChapter[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [needsSetup, setNeedsSetup] = useState(false);
   const [playbackState, setPlaybackState] = useState<PlaybackState>("idle");
   const [currentParagraph, setCurrentParagraph] = useState(0);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
@@ -58,6 +59,7 @@ export function Reader() {
     async (url: string, opts: { autoplay: boolean; push: boolean }) => {
       setLoading(true);
       setError(null);
+      setNeedsSetup(false);
       try {
         const data = await fetchChapter(url);
         chapterRef.current = data;
@@ -76,7 +78,11 @@ export function Reader() {
           // mount effect below, which reads the URL's `url`/`autoplay`
           // params and would otherwise reload this same chapter a
           // second time, minus autoplay, on every chapter advance.
-          window.history.replaceState(null, "", `/reader?url=${encodeURIComponent(url)}`);
+          window.history.replaceState(
+            null,
+            "",
+            `${import.meta.env.BASE_URL}reader?url=${encodeURIComponent(url)}`,
+          );
         }
 
         if (data.tocUrl && !book.chapters) {
@@ -93,6 +99,7 @@ export function Reader() {
         }
       } catch (err) {
         setError((err as Error).message);
+        if (err instanceof NoApiBaseError) setNeedsSetup(true);
       } finally {
         setLoading(false);
       }
@@ -158,12 +165,20 @@ export function Reader() {
       {error && (
         <div className="status error">
           <p>{error}</p>
-          <button type="button" onClick={() => initialUrl && loadChapter(chapter?.sourceUrl ?? initialUrl, { autoplay: false, push: false })}>
-            Retry
-          </button>
-          <a href={chapter?.sourceUrl ?? initialUrl} target="_blank" rel="noreferrer">
-            Open original page
-          </a>
+          {needsSetup ? (
+            <button type="button" onClick={() => navigate("/settings")}>
+              Go to Settings
+            </button>
+          ) : (
+            <>
+              <button type="button" onClick={() => initialUrl && loadChapter(chapter?.sourceUrl ?? initialUrl, { autoplay: false, push: false })}>
+                Retry
+              </button>
+              <a href={chapter?.sourceUrl ?? initialUrl} target="_blank" rel="noreferrer">
+                Open original page
+              </a>
+            </>
+          )}
         </div>
       )}
 

@@ -2,21 +2,29 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 
+// Static hosts like GitHub Pages serve project sites under a subpath
+// (https://<user>.github.io/<repo>/), not the domain root. Set
+// VITE_BASE_PATH at build time (e.g. "/tts-app/") for that case; it
+// defaults to "/" for everything else (local dev, Vercel, Netlify, a
+// custom domain).
+const basePath = process.env.VITE_BASE_PATH ?? "/";
+
 // https://vite.dev/config/
 export default defineConfig({
+  base: basePath,
   plugins: [
     react(),
     VitePWA({
       registerType: "autoUpdate",
       includeAssets: ["favicon.svg", "app-icon.svg"],
       manifest: {
-        id: "/",
+        id: basePath,
         name: "Wuxia Reader",
         short_name: "WuxiaTTS",
         description:
           "Listen to wuxia and other web novels read aloud. Share a chapter link from Chrome and it strips ads, reads it out loud, and auto-advances to the next chapter.",
-        start_url: "/",
-        scope: "/",
+        start_url: basePath,
+        scope: basePath,
         display: "standalone",
         background_color: "#1b1230",
         theme_color: "#1b1230",
@@ -39,7 +47,7 @@ export default defineConfig({
         // Android's/Chrome's share sheet when sharing a URL/text from any
         // other app (e.g. Chrome's page-share menu).
         share_target: {
-          action: "/share-target",
+          action: `${basePath}share-target`,
           method: "GET",
           enctype: "application/x-www-form-urlencoded",
           params: {

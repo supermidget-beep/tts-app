@@ -1,0 +1,67 @@
+name: Deploy web app to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+      - claude/wuxia-tts-reader-app-wtsz9b
+    paths:
+      - "web/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/deploy-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build web app
+        run: npm run build:web
+        env:
+          # GitHub Pages project sites are served under /<repo-name>/, not
+          # the domain root.
+          VITE_BASE_PATH: /${{ github.event.repository.name }}/
+          # Best-effort default pointing at the backend deployed via
+          # render.yaml (see the "Deploy to Render" button in the README).
+          # If Render assigned a different URL, this is just a starting
+          # point -- it can be changed any time from the app's Settings
+          # page without redeploying the frontend.
+          VITE_API_BASE_URL: https://wuxia-tts-reader-api.onrender.com
+
+      - name: Add SPA fallback for client-side routing
+        run: cp web/dist/index.html web/dist/404.html
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
