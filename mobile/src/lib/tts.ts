@@ -9,6 +9,16 @@ interface Chunk {
   paragraphIndex: number;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Pause between consecutive chunks -- see the comment at the speak() call
+// site in runLoop() for why this exists. Short enough to be an unnoticed,
+// natural-feeling gap between sentences/paragraphs rather than an
+// awkward silence.
+const SENTENCE_GAP_MS = 250;
+
 // Android's TTS pipeline can clip the tail of an utterance right at the
 // handoff to the next one -- true even queuing cleanly with
 // QueueStrategy.Add, not just when an explicit stop() was involved.
@@ -255,6 +265,17 @@ export class TtsController {
         this.callbacks.onError?.("Speech error while reading this chapter.");
         return;
       }
+
+      // The plugin's speak() re-applies rate/pitch/voice to the shared
+      // TTS engine on every call, and Android's "utterance done" callback
+      // is known to sometimes fire a moment before the audio has actually
+      // finished draining to the speaker. Calling speak() again
+      // immediately risks reconfiguring the engine while the last bit of
+      // the previous chunk is still physically playing, clipping it. A
+      // short pause here gives that buffer time to actually finish first.
+      await sleep(SENTENCE_GAP_MS);
+      if (myGeneration !== this.generation) return; // interrupted during the pause
+
       this.chunkIndex++;
     }
     if (myGeneration !== this.generation) return;
