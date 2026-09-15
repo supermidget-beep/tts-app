@@ -95,9 +95,14 @@ class NativeTtsPlugin : Plugin() {
             call.reject("Missing 'text'")
             return
         }
-        val rate = call.getFloat("rate", 1.0f)
-        val pitch = call.getFloat("pitch", 1.0f)
-        val voiceIndex = call.getInt("voice", -1)
+        // PluginCall.getFloat/getInt return the boxed Java types (Float,
+        // Integer) with no non-null annotation, so Kotlin sees them as
+        // nullable even with a default supplied -- the "?:" here is just
+        // satisfying that static type, since the Java side never actually
+        // returns null once a default is given.
+        val rate = call.getFloat("rate", 1.0f) ?: 1.0f
+        val pitch = call.getFloat("pitch", 1.0f) ?: 1.0f
+        val voiceIndex = call.getInt("voice", -1) ?: -1
 
         whenReady {
             val engine = tts
