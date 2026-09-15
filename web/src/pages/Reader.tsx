@@ -13,7 +13,6 @@ export function Reader() {
   const autoplayParam = searchParams.get("autoplay") === "1";
 
   const [chapter, setChapter] = useState<ChapterData | null>(null);
-  const [bookId, setBookId] = useState<string | null>(null);
   const [chapters, setChapters] = useState<TocChapter[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -30,6 +29,14 @@ export function Reader() {
   // Mode double-invokes updater functions in dev, which would otherwise
   // fire the chapter-advance side effect twice per real completion.
   const chapterRef = useRef<ChapterData | null>(null);
+  // Tracks which library entry this reading session belongs to. Kept as a
+  // ref (not just derived fresh each load) so auto-advance/next/prev/TOC-
+  // jump always update the SAME entry -- re-deriving a book id from each
+  // chapter's own page (bookIdFromChapter, via its next/prev/toc link
+  // detection) isn't perfectly consistent chapter to chapter, and doing
+  // that on every load risked silently splitting one novel into two
+  // library rows and dropping a favorite set on the first one.
+  const bookIdRef = useRef<string | null>(null);
 
   // Create the controller once settings have loaded from IndexedDB.
   useEffect(() => {
@@ -65,8 +72,13 @@ export function Reader() {
         chapterRef.current = data;
         setChapter(data);
         setCurrentParagraph(0);
-        const book = await upsertBookFromChapter(data);
-        setBookId(book.id);
+
+        const knownBookId = bookIdRef.current;
+        const book = knownBookId
+          ? ((await updateBookPosition(knownBookId, data.sourceUrl, data.title)) ??
+            (await upsertBookFromChapter(data)))
+          : await upsertBookFromChapter(data);
+        bookIdRef.current = book.id;
         setChapters(book.chapters);
 
         controllerRef.current?.loadParagraphs(data.paragraphs, 0);
@@ -118,12 +130,6 @@ export function Reader() {
     // Strict Mode's dev-only double-invocation of this effect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialUrl]);
-
-  useEffect(() => {
-    if (chapter && bookId) {
-      void updateBookPosition(bookId, chapter.sourceUrl, chapter.title);
-    }
-  }, [chapter, bookId]);
 
   useEffect(() => {
     paragraphRefs.current[currentParagraph]?.scrollIntoView({ block: "center", behavior: "smooth" });

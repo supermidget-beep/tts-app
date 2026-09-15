@@ -128,16 +128,18 @@ export async function updateBookPosition(
   bookId: string,
   chapterUrl: string,
   chapterTitle: string,
-): Promise<void> {
+): Promise<BookRecord | undefined> {
   const db = await getDb();
   const existing = await db.get("books", bookId);
-  if (!existing) return;
-  await db.put("books", {
+  if (!existing) return undefined;
+  const record: BookRecord = {
     ...existing,
     currentUrl: chapterUrl,
     currentTitle: chapterTitle,
     updatedAt: Date.now(),
-  });
+  };
+  await db.put("books", record);
+  return record;
 }
 
 export async function getBook(id: string): Promise<BookRecord | undefined> {
