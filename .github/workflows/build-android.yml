@@ -34,7 +34,15 @@ jobs:
           java-version: "21"
           cache: gradle
 
-      - uses: android-actions/setup-android@v3
+      # GitHub's ubuntu-latest runners already ship a working Android SDK
+      # (ANDROID_HOME is pre-set) -- no separate setup action needed.
+      # android-actions/setup-android@v3 was tried here and is broken: it
+      # tries to `sdkmanager tools`, a package Google removed from the SDK
+      # repository years ago, and treats that failure as fatal.
+      - name: Accept Android SDK licenses
+        run: |
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -maxdepth 2 -name sdkmanager -type f | sort -V | tail -1)
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
 
       - run: npm ci
 
