@@ -126,6 +126,12 @@ select {
   gap: 0.5rem;
 }
 
+.book-favorite {
+  font-size: 1.1rem;
+  color: var(--accent);
+  padding-inline: 0.6rem;
+}
+
 .book-open {
   flex: 1;
   text-align: left;

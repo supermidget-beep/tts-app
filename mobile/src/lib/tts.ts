@@ -36,12 +36,21 @@ function splitIntoChunks(paragraphs: string[]): Chunk[] {
 
 let voicesCache: SpeechSynthesisVoice[] | null = null;
 
-export async function getVoices(): Promise<SpeechSynthesisVoice[]> {
-  if (!voicesCache) {
+export async function getVoices(forceRefresh = false): Promise<SpeechSynthesisVoice[]> {
+  if (!voicesCache || forceRefresh) {
     const { voices } = await TextToSpeech.getSupportedVoices();
     voicesCache = voices;
   }
   return voicesCache;
+}
+
+// Opens Android's system screen for installing/managing TTS voice data
+// (Settings > Text-to-speech). This is how you get higher-quality voices
+// (e.g. Google's "Wavenet"-style natural voices) beyond whatever shipped
+// on the device by default -- it's a system-level install, not something
+// this app can do on its own.
+export function openVoiceInstall(): Promise<void> {
+  return TextToSpeech.openInstall();
 }
 
 export interface TtsCallbacks {

@@ -9,6 +9,7 @@ export interface BookRecord {
   chapters: TocChapter[] | null;
   currentUrl: string;
   currentTitle: string;
+  favorite: boolean;
   addedAt: number;
   updatedAt: number;
 }
@@ -99,9 +100,19 @@ export async function upsertBookFromChapter(chapter: ChapterData): Promise<BookR
     chapters: existing?.chapters ?? null,
     currentUrl: chapter.sourceUrl,
     currentTitle: chapter.title,
+    favorite: existing?.favorite ?? false,
     addedAt: existing?.addedAt ?? now,
     updatedAt: now,
   };
+  await db.put("books", record);
+  return record;
+}
+
+export async function setFavorite(id: string, favorite: boolean): Promise<BookRecord | undefined> {
+  const db = await getDb();
+  const existing = await db.get("books", id);
+  if (!existing) return undefined;
+  const record: BookRecord = { ...existing, favorite };
   await db.put("books", record);
   return record;
 }
@@ -137,7 +148,11 @@ export async function getBook(id: string): Promise<BookRecord | undefined> {
 export async function listBooks(): Promise<BookRecord[]> {
   const db = await getDb();
   const all = await db.getAllFromIndex("books", "updatedAt");
-  return all.reverse();
+  all.reverse(); // most recently read first
+  // Favorites float to the top (still most-recent-first within each group).
+  // Records saved before the favorite field existed won't have it at all.
+  all.sort((a, b) => Number(b.favorite ?? false) - Number(a.favorite ?? false));
+  return all;
 }
 
 export async function deleteBook(id: string): Promise<void> {

@@ -92,6 +92,13 @@ export function Settings() {
           ))}
         </select>
       </label>
+
+      <p className="hint">
+        Want more natural-sounding voices? These come from your phone's system
+        text-to-speech engine, not this app. On Android: Settings → System → Languages &amp;
+        input → Text-to-speech output → (your engine, e.g. Google) → install a higher-quality
+        "natural" voice, then reopen this page.
+      </p>
     </div>
   );
 }
