@@ -43,6 +43,20 @@
         </provider>
     </application>
 
+    <!-- Package-visibility (Android 11+/API 30+) declarations needed for
+         android.speech.tts.TextToSpeech to find/bind an engine, and for
+         NativeTtsPlugin's openInstall() to resolve the voice-data install
+         screen -- without these, PackageManager queries for both can
+         silently come back empty even though a TTS engine is installed. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.tts.engine.CHECK_TTS_DATA" />
+        </intent>
+    </queries>
+
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />

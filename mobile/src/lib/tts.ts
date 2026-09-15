@@ -1,7 +1,13 @@
-import { TextToSpeech, QueueStrategy } from "@capacitor-community/text-to-speech";
-import type { SpeechSynthesisVoice } from "@capacitor-community/text-to-speech";
+import { registerPlugin } from "@capacitor/core";
 
-export type { SpeechSynthesisVoice };
+export interface SpeechSynthesisVoice {
+  voiceURI: string;
+  name: string;
+  lang: string;
+  localService: boolean;
+  default: boolean;
+}
+
 export type PlaybackState = "idle" | "playing" | "paused" | "ended";
 
 interface Chunk {
@@ -9,25 +15,30 @@ interface Chunk {
   paragraphIndex: number;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+interface NativeTtsPlugin {
+  speak(options: { text: string; rate: number; pitch: number; voice?: number }): Promise<void>;
+  stop(): Promise<void>;
+  getVoices(): Promise<{ voices: SpeechSynthesisVoice[] }>;
+  openInstall(): Promise<void>;
 }
 
-// Pause between consecutive chunks -- see the comment at the speak() call
-// site in runLoop() for why this exists. Short enough to be an unnoticed,
-// natural-feeling gap between sentences/paragraphs rather than an
-// awkward silence.
-const SENTENCE_GAP_MS = 250;
+// Backed by android/.../NativeTtsPlugin.kt -- a from-scratch replacement
+// for @capacitor-community/text-to-speech, written after that plugin
+// reliably clipped the last word of sentences no matter what was tried
+// against it from this side (QueueStrategy.Add instead of Flush,
+// whole-paragraph chunks instead of sentence-sized ones, an explicit
+// pause between chunks), while Android's own "Select to Speak" reads the
+// exact same device/voice with no clipping at all. That ruled out the
+// engine/voice itself and pointed at how the community plugin drives it:
+// its native speak()/stop()/setSpeechRate() etc. are never explicitly
+// dispatched to the main thread, and android.speech.tts.TextToSpeech is
+// documented to expect being driven consistently from one thread.
+// NativeTtsPlugin.kt pins every engine interaction to the main thread
+// instead (the same pattern ChapterExtractorPlugin.kt already used
+// successfully), and its stop() properly resolves any pending speak()
+// call rather than leaving it hanging forever.
+const NativeTts = registerPlugin<NativeTtsPlugin>("NativeTts");
 
-// Tried grouping whole paragraphs into one utterance on the theory that
-// the clipping was about the boundary *between* our speak() calls -- but
-// it turned out to clip mid-paragraph too, inside a single call, which
-// only the engine's own internal sentence-to-sentence pacing controls.
-// That rules out fixing this by touching fewer boundaries; it means the
-// engine's *internal* pacing can't be trusted either. So: back to one
-// sentence per chunk, explicitly boundary every sentence ourselves
-// (QueueStrategy.Add + SENTENCE_GAP_MS below), and never hand the engine
-// more than one sentence to pace on its own.
 const MAX_CHUNK_LEN = 220;
 
 function splitIntoChunks(paragraphs: string[]): Chunk[] {
@@ -57,7 +68,7 @@ let voicesCache: SpeechSynthesisVoice[] | null = null;
 
 export async function getVoices(forceRefresh = false): Promise<SpeechSynthesisVoice[]> {
   if (!voicesCache || forceRefresh) {
-    const { voices } = await TextToSpeech.getSupportedVoices();
+    const { voices } = await NativeTts.getVoices();
     voicesCache = voices;
   }
   return voicesCache;
@@ -69,7 +80,7 @@ export async function getVoices(forceRefresh = false): Promise<SpeechSynthesisVo
 // on the device by default -- it's a system-level install, not something
 // this app can do on its own.
 export function openVoiceInstall(): Promise<void> {
-  return TextToSpeech.openInstall();
+  return NativeTts.openInstall();
 }
 
 export interface TtsCallbacks {
@@ -79,14 +90,10 @@ export interface TtsCallbacks {
   onError?: (message: string) => void;
 }
 
-// The native TextToSpeech plugin's speak() promise resolves on the
-// engine's "utterance done" callback -- but its stop() implementation
-// clears pending callbacks WITHOUT ever firing onDone/onError, so an
-// in-flight speak() call awaited directly would hang forever the moment
-// pause/skip/stop calls stop(). Every chunk's speak() is raced against a
-// manually-resolved "cancel" signal instead, so interrupting playback
-// always unblocks the loop -- the abandoned native call itself is
-// harmless, just never resolves (a known, accepted quirk of the plugin).
+// Unlike the old community plugin, NativeTtsPlugin's stop() explicitly
+// resolves any pending speak() call, so a still-in-flight chunk always
+// settles the moment playback is interrupted -- no cancel-race/hanging-
+// promise workaround needed here.
 export class TtsController {
   private chunks: Chunk[] = [];
   private chunkIndex = 0;
@@ -97,7 +104,6 @@ export class TtsController {
   private callbacks: TtsCallbacks;
   private lastReportedParagraph = -1;
   private generation = 0;
-  private cancelResolvers: Array<() => void> = [];
 
   constructor(rate: number, pitch: number, callbacks: TtsCallbacks = {}) {
     this.rate = rate;
@@ -191,15 +197,9 @@ export class TtsController {
     void this.runLoop();
   }
 
-  // Bumps the generation (so a still-in-flight loop iteration recognizes
-  // it's been superseded and gives up cleanly) and resolves every pending
-  // cancel-race so nothing is left waiting on a speak() call that will
-  // never settle on its own.
   private interrupt() {
     this.generation++;
-    void TextToSpeech.stop();
-    this.cancelResolvers.forEach((resolve) => resolve());
-    this.cancelResolvers = [];
+    void NativeTts.stop();
   }
 
   private setState(state: PlaybackState) {
@@ -216,62 +216,32 @@ export class TtsController {
   }
 
   private async runLoop() {
-    // No "already running" guard here: relying on it would be wrong,
-    // because when a restart calls interrupt() + runLoop() synchronously,
-    // the previous runLoop call hasn't unwound yet (its cancelled
-    // Promise.race only resolves on a later microtask), so a same-tick
-    // guard would see a stale "still running" and silently no-op the
-    // restart. The generation check below (right after each await) is
-    // what keeps only one loop's iterations taking effect: a superseded
-    // loop always hits that check and returns before it could speak()
-    // again, so it never gets a chance to queue a stray chunk behind the
-    // new loop's -- important now that chunks use QueueStrategy.Add
-    // rather than Flush (see below), since Add no longer auto-clears
-    // whatever a stale caller might otherwise queue.
+    // The generation check after each await is what keeps only one loop's
+    // iterations taking effect: a superseded loop (pause/stop/skip/rate-
+    // pitch-voice change firing mid-chunk) always hits that check and
+    // returns before speaking again.
     const myGeneration = this.generation;
     while (this.chunkIndex < this.chunks.length) {
       this.reportParagraph();
       const chunk = this.chunks[this.chunkIndex];
 
-      this.cancelResolvers = [];
-      const cancelPromise = new Promise<"cancelled">((resolve) => {
-        this.cancelResolvers.push(() => resolve("cancelled"));
-      });
-      const speakPromise = TextToSpeech.speak({
-        text: chunk.text,
-        rate: this.rate,
-        pitch: this.pitch,
-        voice: this.voiceIndex ?? undefined,
-        // Add, not Flush: the native plugin's speak() calls the engine's
-        // stop() first for any non-Add request, and that stop() can clip
-        // the tail end of the PREVIOUS chunk's audio if it fires just as
-        // playback is finishing -- heard as the last word of a sentence
-        // getting cut off, right at each chunk boundary. interrupt()
-        // already calls stop() explicitly for real interruptions (pause/
-        // stop/skip/rate-pitch-voice change), so plain continuation here
-        // never needs the engine to stop anything itself.
-        queueStrategy: QueueStrategy.Add,
-      })
-        .then(() => "done" as const)
-        .catch(() => "error" as const);
-
-      const result = await Promise.race([speakPromise, cancelPromise]);
-      if (myGeneration !== this.generation) return; // superseded by pause/stop/skip
-
-      if (result === "error") {
+      try {
+        // interrupt()'s stop() resolves (not rejects) any pending speak()
+        // call, so a genuine engine error is the only thing that reaches
+        // the catch block below -- an interruption falls through to the
+        // generation check right after, same as normal completion.
+        await NativeTts.speak({
+          text: chunk.text,
+          rate: this.rate,
+          pitch: this.pitch,
+          voice: this.voiceIndex ?? undefined,
+        });
+      } catch {
+        if (myGeneration !== this.generation) return;
         this.callbacks.onError?.("Speech error while reading this chapter.");
         return;
       }
-
-      // The plugin's speak() re-applies rate/pitch/voice to the shared
-      // TTS engine on every call, and Android's "utterance done" callback
-      // is known to sometimes fire a moment before the audio has actually
-      // finished draining to the speaker. Calling speak() again
-      // immediately risks reconfiguring the engine while the last bit of
-      // the previous chunk is still physically playing, clipping it. A
-      // short pause here gives that buffer time to actually finish first.
-      await sleep(SENTENCE_GAP_MS);
-      if (myGeneration !== this.generation) return; // interrupted during the pause
+      if (myGeneration !== this.generation) return; // superseded by pause/stop/skip
 
       this.chunkIndex++;
     }

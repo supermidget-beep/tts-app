@@ -21,6 +21,7 @@ class MainActivity : BridgeActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         registerPlugin(ChapterExtractorPlugin::class.java)
         registerPlugin(ShareReceiverPlugin::class.java)
+        registerPlugin(NativeTtsPlugin::class.java)
         super.onCreate(savedInstanceState)
         handleIntent(intent, live = false)
     }
