@@ -19,19 +19,16 @@ function sleep(ms: number): Promise<void> {
 // awkward silence.
 const SENTENCE_GAP_MS = 250;
 
-// Android's TTS pipeline can clip the tail of an utterance right at the
-// handoff to the next one -- true even queuing cleanly with
-// QueueStrategy.Add, not just when an explicit stop() was involved.
-// Sentence-sized chunks (the original value here was ~220 chars, close to
-// one sentence) meant one of these fragile transitions after nearly every
-// sentence. A whole paragraph as one utterance sidesteps it almost
-// entirely: the engine's own internal sentence-to-sentence pacing *within*
-// one speak() call is reliable, it's only the boundary *between* separate
-// calls that isn't. 3500 stays comfortably under the ~4000-character limit
-// Android's TextToSpeech enforces per utterance (getMaxSpeechInputLength);
-// the buffer/split logic below still exists to break up the rare
-// paragraph longer than that.
-const MAX_CHUNK_LEN = 3500;
+// Tried grouping whole paragraphs into one utterance on the theory that
+// the clipping was about the boundary *between* our speak() calls -- but
+// it turned out to clip mid-paragraph too, inside a single call, which
+// only the engine's own internal sentence-to-sentence pacing controls.
+// That rules out fixing this by touching fewer boundaries; it means the
+// engine's *internal* pacing can't be trusted either. So: back to one
+// sentence per chunk, explicitly boundary every sentence ourselves
+// (QueueStrategy.Add + SENTENCE_GAP_MS below), and never hand the engine
+// more than one sentence to pace on its own.
+const MAX_CHUNK_LEN = 220;
 
 function splitIntoChunks(paragraphs: string[]): Chunk[] {
   const chunks: Chunk[] = [];
