@@ -1,5 +1,7 @@
 const USER_AGENT =
-  "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36";
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
+const SEC_CH_UA =
+  '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"';
 
 export class FetchError extends Error {
   status: number;
@@ -46,11 +48,36 @@ export async function fetchHtml(rawUrl: string): Promise<{ html: string; finalUr
       signal: controller.signal,
       headers: {
         "User-Agent": USER_AGENT,
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
+        // A best-effort attempt to look like a real browser navigation to
+        // anti-bot firewalls that gate on these headers (client hints,
+        // fetch metadata, a same-site referer). This won't get past a
+        // JS-challenge/IP-reputation block (see the comment on the 403
+        // branch below), but it's a cheap, harmless thing to send.
+        "sec-ch-ua": SEC_CH_UA,
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+        Referer: `${url.protocol}//${url.host}/`,
       },
     });
     if (!res.ok) {
+      if (res.status === 403) {
+        // Almost always an anti-bot firewall blocking this server's IP or
+        // TLS/HTTP fingerprint outright, not a broken URL -- the same
+        // request from a real browser (different IP, real TLS stack)
+        // typically works fine. No amount of header tweaking here can
+        // solve an IP-reputation block or a JS challenge.
+        throw new FetchError(
+          "That site is blocking automated requests (got a 403). It may not work through this reader even though it opens fine in your browser.",
+          502,
+        );
+      }
       throw new FetchError(`Upstream site returned ${res.status}`, 502);
     }
     const contentType = res.headers.get("content-type") ?? "";
