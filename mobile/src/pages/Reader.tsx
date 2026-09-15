@@ -1,0 +1,207 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { fetchChapter, fetchToc, type ChapterData, type TocChapter } from "../lib/api";
+import { TtsController, getVoices, type PlaybackState, type SpeechSynthesisVoice } from "../lib/tts";
+import { saveBookChapters, updateBookPosition, upsertBookFromChapter } from "../lib/storage";
+import { useTtsSettings } from "../lib/useTtsSettings";
+import { PlayerBar } from "../components/PlayerBar";
+
+export function Reader() {
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const initialUrl = searchParams.get("url");
+  const autoplayParam = searchParams.get("autoplay") === "1";
+
+  const [chapter, setChapter] = useState<ChapterData | null>(null);
+  const [bookId, setBookId] = useState<string | null>(null);
+  const [chapters, setChapters] = useState<TocChapter[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [playbackState, setPlaybackState] = useState<PlaybackState>("idle");
+  const [currentParagraph, setCurrentParagraph] = useState(0);
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+
+  const { settings, update: updateSettings, loaded: settingsLoaded } = useTtsSettings();
+  const controllerRef = useRef<TtsController | null>(null);
+  const paragraphRefs = useRef<Array<HTMLParagraphElement | null>>([]);
+  // Plain ref (not React state) so onChapterEnd reads the latest chapter
+  // without going through a setState updater function.
+  const chapterRef = useRef<ChapterData | null>(null);
+
+  useEffect(() => {
+    if (!settingsLoaded || controllerRef.current) return;
+    controllerRef.current = new TtsController(settings.rate, settings.pitch, {
+      onStateChange: setPlaybackState,
+      onParagraphChange: setCurrentParagraph,
+      onChapterEnd: () => {
+        const nextUrl = chapterRef.current?.nextUrl;
+        if (nextUrl) void loadChapter(nextUrl, { autoplay: true });
+      },
+      onError: (message) => setError(message),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsLoaded, settings.rate, settings.pitch]);
+
+  useEffect(() => {
+    getVoices().then(setVoices);
+  }, []);
+
+  useEffect(() => {
+    if (!settingsLoaded || !controllerRef.current) return;
+    const idx = settings.voiceURI ? voices.findIndex((v) => v.voiceURI === settings.voiceURI) : -1;
+    controllerRef.current.setVoice(idx >= 0 ? idx : null);
+  }, [settings.voiceURI, voices, settingsLoaded]);
+
+  const loadChapter = useCallback(async (url: string, opts: { autoplay: boolean }) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await fetchChapter(url);
+      chapterRef.current = data;
+      setChapter(data);
+      setCurrentParagraph(0);
+      const book = await upsertBookFromChapter(data);
+      setBookId(book.id);
+      setChapters(book.chapters);
+
+      controllerRef.current?.loadParagraphs(data.paragraphs, 0);
+      if (opts.autoplay) controllerRef.current?.play();
+
+      if (data.tocUrl && !book.chapters) {
+        fetchToc(data.tocUrl)
+          .then((toc) => {
+            if (toc.chapters.length > 0) {
+              setChapters(toc.chapters);
+              void saveBookChapters(book.id, toc.chapters);
+            }
+          })
+          .catch(() => {
+            // Table of contents is a nice-to-have; ignore failures.
+          });
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadedInitialUrlRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!initialUrl || loadedInitialUrlRef.current === initialUrl) return;
+    loadedInitialUrlRef.current = initialUrl;
+    void loadChapter(initialUrl, { autoplay: autoplayParam });
+    // Only run for the URL we mounted with; subsequent chapter changes go
+    // through loadChapter() directly (they don't touch the route, so this
+    // won't re-fire for them).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialUrl]);
+
+  useEffect(() => {
+    if (chapter && bookId) {
+      void updateBookPosition(bookId, chapter.sourceUrl, chapter.title);
+    }
+  }, [chapter, bookId]);
+
+  useEffect(() => {
+    paragraphRefs.current[currentParagraph]?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [currentParagraph]);
+
+  if (!initialUrl) {
+    return (
+      <div className="page">
+        <p>No chapter URL given.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page reader-page">
+      <header className="reader-header">
+        <button type="button" className="back-link" onClick={() => navigate("/")}>
+          ← Library
+        </button>
+        {chapters && chapters.length > 0 && (
+          <select
+            className="chapter-jump"
+            value={chapter?.sourceUrl ?? ""}
+            onChange={(e) => {
+              const wasPlaying = playbackState === "playing";
+              void loadChapter(e.target.value, { autoplay: wasPlaying });
+            }}
+          >
+            {chapters.map((c) => (
+              <option key={c.url} value={c.url}>
+                {c.title}
+              </option>
+            ))}
+          </select>
+        )}
+      </header>
+
+      {loading && <p className="status">Loading chapter…</p>}
+      {error && (
+        <div className="status error">
+          <p>{error}</p>
+          <button
+            type="button"
+            onClick={() => loadChapter(chapter?.sourceUrl ?? initialUrl, { autoplay: false })}
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {chapter && !loading && (
+        <>
+          <h1>{chapter.title}</h1>
+          <article className="chapter-text">
+            {chapter.paragraphs.map((p, i) => (
+              <p
+                key={i}
+                ref={(el) => {
+                  paragraphRefs.current[i] = el;
+                }}
+                className={i === currentParagraph ? "current" : undefined}
+                onClick={() => controllerRef.current?.jumpToParagraph(i)}
+              >
+                {p}
+              </p>
+            ))}
+          </article>
+        </>
+      )}
+
+      {chapter && (
+        <PlayerBar
+          state={playbackState}
+          settings={settings}
+          voices={voices}
+          hasNext={Boolean(chapter.nextUrl)}
+          hasPrev={Boolean(chapter.prevUrl)}
+          onPlayPause={() => {
+            if (playbackState === "playing") controllerRef.current?.pause();
+            else controllerRef.current?.play();
+          }}
+          onSkipForward={() => controllerRef.current?.skipForward()}
+          onSkipBackward={() => controllerRef.current?.skipBackward()}
+          onNextChapter={() =>
+            chapter.nextUrl && loadChapter(chapter.nextUrl, { autoplay: playbackState === "playing" })
+          }
+          onPrevChapter={() =>
+            chapter.prevUrl && loadChapter(chapter.prevUrl, { autoplay: playbackState === "playing" })
+          }
+          onRateChange={(rate) => {
+            updateSettings({ rate });
+            controllerRef.current?.setRate(rate);
+          }}
+          onPitchChange={(pitch) => {
+            updateSettings({ pitch });
+            controllerRef.current?.setPitch(pitch);
+          }}
+          onVoiceChange={(voiceURI) => updateSettings({ voiceURI: voiceURI || null })}
+        />
+      )}
+    </div>
+  );
+}

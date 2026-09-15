@@ -3,14 +3,17 @@
   "private": true,
   "workspaces": [
     "server",
-    "web"
+    "web",
+    "mobile"
   ],
   "scripts": {
     "dev": "concurrently -n server,web -c blue,magenta \"npm run dev:server\" \"npm run dev:web\"",
     "dev:server": "npm run dev --workspace server",
     "dev:web": "npm run dev --workspace web",
+    "dev:mobile": "npm run dev --workspace mobile",
     "build:server": "npm run build --workspace server",
-    "build:web": "npm run build --workspace web"
+    "build:web": "npm run build --workspace web",
+    "build:mobile": "npm run build --workspace mobile"
   },
   "devDependencies": {
     "concurrently": "^10.0.5"

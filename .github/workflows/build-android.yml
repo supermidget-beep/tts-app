@@ -1,0 +1,58 @@
+name: Build Android APK
+
+# This sandbox's own network policy blocks dl.google.com (where the
+# Android SDK is downloaded from), so the app can't be compiled or tested
+# in this dev environment -- only here, on GitHub's unrestricted runners,
+# can it actually be built.
+
+on:
+  push:
+    branches:
+      - main
+      - claude/wuxia-tts-reader-app-wtsz9b
+    paths:
+      - "mobile/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/build-android.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - uses: android-actions/setup-android@v3
+
+      - run: npm ci
+
+      - name: Build the web bundle
+        run: npm run build:mobile
+
+      - name: Sync the built web bundle into the Android project
+        run: npx cap sync android
+        working-directory: mobile
+
+      - name: Assemble debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+        working-directory: mobile/android
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wuxia-reader-debug-apk
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

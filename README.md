@@ -6,11 +6,22 @@ strips ads/boilerplate down to just the story, reads it aloud with
 adjustable speed/pitch/voice, and automatically moves on to the next
 chapter when the current one finishes.
 
-Built as an installable Android web app (PWA), because that's the only
-way for "share from Chrome into an app" to work without an Android
-developer account, Kotlin/Java build toolchain, and Play Store listing.
-See [Platform notes](#platform-notes) below if you also want an iOS
-version.
+There are two apps here, because they solve different problems:
+
+- **`web/` + `server/`** — an installable Android web app (PWA). No
+  Kotlin/Android build tooling needed. Works well, but a backend fetching
+  a page server-side is something sites *can* block (anti-bot firewalls
+  like Cloudflare's JS challenge -- see [Limitations](#limitations)).
+- **`mobile/`** — a native Android app (Capacitor + a custom Kotlin
+  plugin). Loads each chapter in a real, hidden WebView on the phone
+  itself, so it solves Cloudflare-style challenges the same way your own
+  Chrome does, and reads with Android's native TTS engine. Requires
+  sideloading an APK (no Play Store listing) -- see
+  [`mobile/README.md`](./mobile/README.md).
+
+Start with the PWA if the sites you read are not Cloudflare-protected;
+reach for the native app when they are. See
+[Platform notes](#platform-notes) below if you also want an iOS version.
 
 ## How it works
 
@@ -57,8 +68,9 @@ Chrome "Share" → PWA share target → backend extractor → reader (Web Speech
 ## Repo layout
 
 ```
-server/   Express + TypeScript extraction API
+server/   Express + TypeScript extraction API (used by web/)
 web/      Vite + React + TypeScript PWA
+mobile/   Capacitor + Kotlin native Android app (see mobile/README.md)
 ```
 
 ## Running locally
@@ -177,6 +189,14 @@ site slips something through.
 - Reading uses the phone's on-device TTS voices via the Web Speech API;
   voice quality/selection depends on what's installed on the device, not
   on this app.
+- **Sites behind an anti-bot firewall that issues a JS challenge (most
+  visibly, Cloudflare's "Just a moment..." interstitial) will not work
+  through the PWA/backend at all**, on any hosting provider — this isn't
+  an IP or header problem that can be tuned away; it requires actually
+  executing JavaScript in a real browser to pass. The error message will
+  say which firewall it thinks blocked the request. Use the native app in
+  `mobile/` for these sites instead — see the note at the top of this
+  file and [`mobile/README.md`](./mobile/README.md).
 
 ## Platform notes
 

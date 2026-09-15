@@ -1,0 +1,233 @@
+import { TextToSpeech, QueueStrategy } from "@capacitor-community/text-to-speech";
+import type { SpeechSynthesisVoice } from "@capacitor-community/text-to-speech";
+
+export type { SpeechSynthesisVoice };
+export type PlaybackState = "idle" | "playing" | "paused" | "ended";
+
+interface Chunk {
+  text: string;
+  paragraphIndex: number;
+}
+
+const MAX_CHUNK_LEN = 220;
+
+function splitIntoChunks(paragraphs: string[]): Chunk[] {
+  const chunks: Chunk[] = [];
+  paragraphs.forEach((paragraph, paragraphIndex) => {
+    const sentences = paragraph.match(/[^.!?]+[.!?]*(\s+|$)/g) ?? [paragraph];
+    let buffer = "";
+    for (const sentence of sentences) {
+      if ((buffer + sentence).length > MAX_CHUNK_LEN && buffer) {
+        chunks.push({ text: buffer.trim(), paragraphIndex });
+        buffer = "";
+      }
+      buffer += sentence;
+      while (buffer.length > MAX_CHUNK_LEN) {
+        let cut = buffer.lastIndexOf(" ", MAX_CHUNK_LEN);
+        if (cut <= 0) cut = MAX_CHUNK_LEN;
+        chunks.push({ text: buffer.slice(0, cut).trim(), paragraphIndex });
+        buffer = buffer.slice(cut).trim();
+      }
+    }
+    if (buffer.trim()) chunks.push({ text: buffer.trim(), paragraphIndex });
+  });
+  return chunks;
+}
+
+let voicesCache: SpeechSynthesisVoice[] | null = null;
+
+export async function getVoices(): Promise<SpeechSynthesisVoice[]> {
+  if (!voicesCache) {
+    const { voices } = await TextToSpeech.getSupportedVoices();
+    voicesCache = voices;
+  }
+  return voicesCache;
+}
+
+export interface TtsCallbacks {
+  onStateChange?: (state: PlaybackState) => void;
+  onParagraphChange?: (paragraphIndex: number) => void;
+  onChapterEnd?: () => void;
+  onError?: (message: string) => void;
+}
+
+// The native TextToSpeech plugin's speak() promise resolves on the
+// engine's "utterance done" callback -- but its stop() implementation
+// clears pending callbacks WITHOUT ever firing onDone/onError, so an
+// in-flight speak() call awaited directly would hang forever the moment
+// pause/skip/stop calls stop(). Every chunk's speak() is raced against a
+// manually-resolved "cancel" signal instead, so interrupting playback
+// always unblocks the loop -- the abandoned native call itself is
+// harmless, just never resolves (a known, accepted quirk of the plugin).
+export class TtsController {
+  private chunks: Chunk[] = [];
+  private chunkIndex = 0;
+  private rate: number;
+  private pitch: number;
+  private voiceIndex: number | null = null;
+  private state: PlaybackState = "idle";
+  private callbacks: TtsCallbacks;
+  private lastReportedParagraph = -1;
+  private generation = 0;
+  private cancelResolvers: Array<() => void> = [];
+
+  constructor(rate: number, pitch: number, callbacks: TtsCallbacks = {}) {
+    this.rate = rate;
+    this.pitch = pitch;
+    this.callbacks = callbacks;
+  }
+
+  loadParagraphs(paragraphs: string[], startParagraphIndex = 0) {
+    this.interrupt();
+    this.chunks = splitIntoChunks(paragraphs);
+    this.chunkIndex = this.chunks.findIndex((c) => c.paragraphIndex >= startParagraphIndex);
+    if (this.chunkIndex < 0) this.chunkIndex = 0;
+    this.lastReportedParagraph = -1;
+    this.setState("idle");
+  }
+
+  setVoice(voiceIndex: number | null) {
+    this.voiceIndex = voiceIndex;
+    if (this.state === "playing") this.restartCurrentChunk();
+  }
+
+  setRate(rate: number) {
+    this.rate = rate;
+    if (this.state === "playing") this.restartCurrentChunk();
+  }
+
+  setPitch(pitch: number) {
+    this.pitch = pitch;
+    if (this.state === "playing") this.restartCurrentChunk();
+  }
+
+  play() {
+    if (this.chunks.length === 0 || this.state === "playing") return;
+    this.setState("playing");
+    void this.runLoop();
+  }
+
+  pause() {
+    if (this.state !== "playing") return;
+    this.interrupt();
+    this.setState("paused");
+  }
+
+  stop() {
+    this.interrupt();
+    this.setState("idle");
+  }
+
+  skipForward() {
+    const paragraph = this.chunks[this.chunkIndex]?.paragraphIndex ?? 0;
+    const nextIndex = this.chunks.findIndex((c) => c.paragraphIndex > paragraph);
+    if (nextIndex >= 0) this.jumpToChunk(nextIndex);
+  }
+
+  skipBackward() {
+    const paragraph = this.chunks[this.chunkIndex]?.paragraphIndex ?? 0;
+    let target = -1;
+    for (let i = this.chunkIndex - 1; i >= 0; i--) {
+      if (this.chunks[i].paragraphIndex < paragraph) {
+        target = this.chunks.findIndex((c) => c.paragraphIndex === this.chunks[i].paragraphIndex);
+        break;
+      }
+    }
+    if (target >= 0) this.jumpToChunk(target);
+  }
+
+  jumpToParagraph(paragraphIndex: number) {
+    const idx = this.chunks.findIndex((c) => c.paragraphIndex >= paragraphIndex);
+    if (idx >= 0) this.jumpToChunk(idx);
+  }
+
+  getState(): PlaybackState {
+    return this.state;
+  }
+
+  private jumpToChunk(index: number) {
+    const wasPlaying = this.state === "playing";
+    this.interrupt();
+    this.chunkIndex = index;
+    if (wasPlaying) {
+      this.setState("playing");
+      void this.runLoop();
+    } else {
+      this.reportParagraph();
+    }
+  }
+
+  private restartCurrentChunk() {
+    this.interrupt();
+    this.setState("playing");
+    void this.runLoop();
+  }
+
+  // Bumps the generation (so a still-in-flight loop iteration recognizes
+  // it's been superseded and gives up cleanly) and resolves every pending
+  // cancel-race so nothing is left waiting on a speak() call that will
+  // never settle on its own.
+  private interrupt() {
+    this.generation++;
+    void TextToSpeech.stop();
+    this.cancelResolvers.forEach((resolve) => resolve());
+    this.cancelResolvers = [];
+  }
+
+  private setState(state: PlaybackState) {
+    this.state = state;
+    this.callbacks.onStateChange?.(state);
+  }
+
+  private reportParagraph() {
+    const p = this.chunks[this.chunkIndex]?.paragraphIndex;
+    if (p !== undefined && p !== this.lastReportedParagraph) {
+      this.lastReportedParagraph = p;
+      this.callbacks.onParagraphChange?.(p);
+    }
+  }
+
+  private async runLoop() {
+    // No "already running" guard here: relying on it would be wrong,
+    // because when a restart calls interrupt() + runLoop() synchronously,
+    // the previous runLoop call hasn't unwound yet (its cancelled
+    // Promise.race only resolves on a later microtask), so a same-tick
+    // guard would see a stale "still running" and silently no-op the
+    // restart. The generation check below is what actually keeps only
+    // one loop's iterations taking effect; the native plugin's speak()
+    // itself flushes any prior utterance, so an old loop's very next
+    // chunk (if it sneaks out before seeing the generation bump) is a
+    // harmless no-op at the engine level too.
+    const myGeneration = this.generation;
+    while (this.chunkIndex < this.chunks.length) {
+      this.reportParagraph();
+      const chunk = this.chunks[this.chunkIndex];
+
+      this.cancelResolvers = [];
+      const cancelPromise = new Promise<"cancelled">((resolve) => {
+        this.cancelResolvers.push(() => resolve("cancelled"));
+      });
+      const speakPromise = TextToSpeech.speak({
+        text: chunk.text,
+        rate: this.rate,
+        pitch: this.pitch,
+        voice: this.voiceIndex ?? undefined,
+        queueStrategy: QueueStrategy.Flush,
+      })
+        .then(() => "done" as const)
+        .catch(() => "error" as const);
+
+      const result = await Promise.race([speakPromise, cancelPromise]);
+      if (myGeneration !== this.generation) return; // superseded by pause/stop/skip
+
+      if (result === "error") {
+        this.callbacks.onError?.("Speech error while reading this chapter.");
+        return;
+      }
+      this.chunkIndex++;
+    }
+    if (myGeneration !== this.generation) return;
+    this.setState("ended");
+    this.callbacks.onChapterEnd?.();
+  }
+}
