@@ -9,7 +9,19 @@ interface Chunk {
   paragraphIndex: number;
 }
 
-const MAX_CHUNK_LEN = 220;
+// Android's TTS pipeline can clip the tail of an utterance right at the
+// handoff to the next one -- true even queuing cleanly with
+// QueueStrategy.Add, not just when an explicit stop() was involved.
+// Sentence-sized chunks (the original value here was ~220 chars, close to
+// one sentence) meant one of these fragile transitions after nearly every
+// sentence. A whole paragraph as one utterance sidesteps it almost
+// entirely: the engine's own internal sentence-to-sentence pacing *within*
+// one speak() call is reliable, it's only the boundary *between* separate
+// calls that isn't. 3500 stays comfortably under the ~4000-character limit
+// Android's TextToSpeech enforces per utterance (getMaxSpeechInputLength);
+// the buffer/split logic below still exists to break up the rare
+// paragraph longer than that.
+const MAX_CHUNK_LEN = 3500;
 
 function splitIntoChunks(paragraphs: string[]): Chunk[] {
   const chunks: Chunk[] = [];
