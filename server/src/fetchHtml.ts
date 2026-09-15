@@ -31,6 +31,45 @@ function assertSafeUrl(url: URL) {
   }
 }
 
+// A 403 here is almost always a firewall/anti-bot product blocking this
+// server's IP or TLS/HTTP fingerprint outright, not a broken URL -- the
+// same request from a real browser (different IP, real TLS stack)
+// typically works fine, and no amount of request-header tweaking can get
+// past an IP-reputation block or a JS challenge. Surface enough of the
+// block response (which vendor, headers, a body snippet) that it's
+// possible to tell those apart from a simpler, possibly-fixable block.
+async function describeBlock(res: Response): Promise<string> {
+  const server = res.headers.get("server") ?? "";
+  const via = res.headers.get("via") ?? "";
+  const cfRay = res.headers.get("cf-ray");
+  const bodySnippet = (await res.text().catch(() => ""))
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300);
+
+  let vendor = "an unidentified firewall/anti-bot service";
+  if (cfRay || /cloudflare/i.test(server) || /checking your browser|cf-browser-verification|attention required/i.test(bodySnippet)) {
+    vendor = "Cloudflare";
+  } else if (/sucuri/i.test(server) || /sucuri/i.test(bodySnippet)) {
+    vendor = "Sucuri";
+  } else if (/akamaighost/i.test(server)) {
+    vendor = "Akamai";
+  } else if (res.headers.has("x-iinfo") || /incapsula/i.test(bodySnippet)) {
+    vendor = "Imperva/Incapsula";
+  }
+
+  const details = [
+    server && `server="${server}"`,
+    cfRay && `cf-ray="${cfRay}"`,
+    via && `via="${via}"`,
+    bodySnippet && `body="${bodySnippet}"`,
+  ]
+    .filter(Boolean)
+    .join(" | ");
+
+  return `That site is blocking this server (403, likely ${vendor}). ${details}`;
+}
+
 export async function fetchHtml(rawUrl: string): Promise<{ html: string; finalUrl: string }> {
   let url: URL;
   try {
@@ -68,15 +107,7 @@ export async function fetchHtml(rawUrl: string): Promise<{ html: string; finalUr
     });
     if (!res.ok) {
       if (res.status === 403) {
-        // Almost always an anti-bot firewall blocking this server's IP or
-        // TLS/HTTP fingerprint outright, not a broken URL -- the same
-        // request from a real browser (different IP, real TLS stack)
-        // typically works fine. No amount of header tweaking here can
-        // solve an IP-reputation block or a JS challenge.
-        throw new FetchError(
-          "That site is blocking automated requests (got a 403). It may not work through this reader even though it opens fine in your browser.",
-          502,
-        );
+        throw new FetchError(await describeBlock(res), 502);
       }
       throw new FetchError(`Upstream site returned ${res.status}`, 502);
     }
