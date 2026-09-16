@@ -37,12 +37,17 @@ site specifically doesn't work there.
   - `MainActivity.kt` / `ShareReceiverPlugin.kt` — Android's native
     "Share" sheet (`ACTION_SEND` intent-filter) instead of the Web Share
     Target API the PWA uses.
-  - `NativeTtsPlugin.kt` — a from-scratch wrapper over
-    `android.speech.tts.TextToSpeech` (replacing an earlier dependency on
-    `@capacitor-community/text-to-speech`, which reliably clipped the last
-    word of sentences). Every interaction with the engine is explicitly
-    pinned to the main thread, since `TextToSpeech` expects to be driven
-    consistently from one thread.
+  - `NativeTtsPlugin.kt` — a wrapper over `android.speech.tts.TextToSpeech`
+    (replacing an earlier dependency on `@capacitor-community/text-to-
+    speech`). Submits every remaining sentence of a chapter to the
+    engine's own queue in one batch (`QUEUE_ADD`) instead of one `speak()`
+    call per sentence gated on JS awaiting each one's completion -- the
+    latter reliably clipped the last word of sentences no matter what was
+    tried against it (queue strategy, chunk sizing, pinning every engine
+    call to the main thread, a native trailing-silence utterance for a
+    guaranteed drain signal), because every sentence boundary had a
+    JS<->native round trip sitting inside it. Progress is tracked via
+    `utteranceStart`/`utteranceDone` events instead.
 
 ## Getting the app onto your phone
 

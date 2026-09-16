@@ -1,4 +1,4 @@
-import { registerPlugin } from "@capacitor/core";
+import { registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 
 export interface SpeechSynthesisVoice {
   voiceURI: string;
@@ -15,28 +15,35 @@ interface Chunk {
   paragraphIndex: number;
 }
 
+interface ChunkPayload {
+  id: string;
+  text: string;
+}
+
 interface NativeTtsPlugin {
-  speak(options: { text: string; rate: number; pitch: number; voice?: number }): Promise<void>;
+  speakChunks(options: { chunks: ChunkPayload[]; rate: number; pitch: number; voice?: number }): Promise<void>;
   stop(): Promise<void>;
   getVoices(): Promise<{ voices: SpeechSynthesisVoice[] }>;
   openInstall(): Promise<void>;
+  addListener(eventName: string, listenerFunc: (data: { id: string; message?: string }) => void): Promise<PluginListenerHandle>;
 }
 
-// Backed by android/.../NativeTtsPlugin.kt -- a from-scratch replacement
-// for @capacitor-community/text-to-speech, written after that plugin
-// reliably clipped the last word of sentences no matter what was tried
-// against it from this side (QueueStrategy.Add instead of Flush,
-// whole-paragraph chunks instead of sentence-sized ones, an explicit
-// pause between chunks), while Android's own "Select to Speak" reads the
-// exact same device/voice with no clipping at all. That ruled out the
-// engine/voice itself and pointed at how the community plugin drives it:
-// its native speak()/stop()/setSpeechRate() etc. are never explicitly
-// dispatched to the main thread, and android.speech.tts.TextToSpeech is
-// documented to expect being driven consistently from one thread.
-// NativeTtsPlugin.kt pins every engine interaction to the main thread
-// instead (the same pattern ChapterExtractorPlugin.kt already used
-// successfully), and its stop() properly resolves any pending speak()
-// call rather than leaving it hanging forever.
+// Backed by android/.../NativeTtsPlugin.kt. Four previous approaches here
+// (QueueStrategy.Add instead of Flush, whole-paragraph chunks instead of
+// sentence-sized ones, pinning every engine call to the main thread, a
+// native trailing-silence utterance meant to force a genuine playback-
+// drain guarantee before resolving) all clipped the last word of
+// sentences identically -- every one of them still called speak() for one
+// sentence, awaited that sentence's own completion in JS, and only then
+// called speak() again, putting a JS<->native round trip in the middle of
+// every sentence boundary.
+//
+// This instead submits every remaining sentence of the chapter to the
+// engine's own QUEUE_ADD queue in a single batch (speakChunks below) and
+// tracks progress via events (utteranceStart/utteranceDone) instead of
+// gating each speak() call on the previous one settling -- there's no
+// longer a JS round trip sitting inside any sentence boundary for the
+// engine to trip over.
 const NativeTts = registerPlugin<NativeTtsPlugin>("NativeTts");
 
 const MAX_CHUNK_LEN = 220;
@@ -62,6 +69,12 @@ function splitIntoChunks(paragraphs: string[]): Chunk[] {
     if (buffer.trim()) chunks.push({ text: buffer.trim(), paragraphIndex });
   });
   return chunks;
+}
+
+let idCounter = 0;
+function nextId(): string {
+  idCounter += 1;
+  return `${Date.now()}-${idCounter}`;
 }
 
 let voicesCache: SpeechSynthesisVoice[] | null = null;
@@ -90,10 +103,6 @@ export interface TtsCallbacks {
   onError?: (message: string) => void;
 }
 
-// Unlike the old community plugin, NativeTtsPlugin's stop() explicitly
-// resolves any pending speak() call, so a still-in-flight chunk always
-// settles the moment playback is interrupted -- no cancel-race/hanging-
-// promise workaround needed here.
 export class TtsController {
   private chunks: Chunk[] = [];
   private chunkIndex = 0;
@@ -103,12 +112,20 @@ export class TtsController {
   private state: PlaybackState = "idle";
   private callbacks: TtsCallbacks;
   private lastReportedParagraph = -1;
-  private generation = 0;
+  // Maps an utterance id from the currently-submitted batch back to its
+  // index into `chunks`. Replaced wholesale on every submitBatch() call,
+  // so an event from a batch that's since been superseded (pause/stop/
+  // skip/rate-pitch-voice change) simply won't be found here and is
+  // ignored -- no separate generation counter needed for that.
+  private idToChunkIndex = new Map<string, number>();
 
   constructor(rate: number, pitch: number, callbacks: TtsCallbacks = {}) {
     this.rate = rate;
     this.pitch = pitch;
     this.callbacks = callbacks;
+    void NativeTts.addListener("utteranceStart", ({ id }) => this.handleUtteranceStart(id));
+    void NativeTts.addListener("utteranceDone", ({ id }) => this.handleUtteranceDone(id));
+    void NativeTts.addListener("utteranceError", ({ id, message }) => this.handleUtteranceError(id, message));
   }
 
   loadParagraphs(paragraphs: string[], startParagraphIndex = 0) {
@@ -138,7 +155,7 @@ export class TtsController {
   play() {
     if (this.chunks.length === 0 || this.state === "playing") return;
     this.setState("playing");
-    void this.runLoop();
+    this.submitBatch();
   }
 
   pause() {
@@ -185,7 +202,7 @@ export class TtsController {
     this.chunkIndex = index;
     if (wasPlaying) {
       this.setState("playing");
-      void this.runLoop();
+      this.submitBatch();
     } else {
       this.reportParagraph();
     }
@@ -194,11 +211,11 @@ export class TtsController {
   private restartCurrentChunk() {
     this.interrupt();
     this.setState("playing");
-    void this.runLoop();
+    this.submitBatch();
   }
 
   private interrupt() {
-    this.generation++;
+    this.idToChunkIndex = new Map();
     void NativeTts.stop();
   }
 
@@ -215,38 +232,52 @@ export class TtsController {
     }
   }
 
-  private async runLoop() {
-    // The generation check after each await is what keeps only one loop's
-    // iterations taking effect: a superseded loop (pause/stop/skip/rate-
-    // pitch-voice change firing mid-chunk) always hits that check and
-    // returns before speaking again.
-    const myGeneration = this.generation;
-    while (this.chunkIndex < this.chunks.length) {
-      this.reportParagraph();
-      const chunk = this.chunks[this.chunkIndex];
-
-      try {
-        // interrupt()'s stop() resolves (not rejects) any pending speak()
-        // call, so a genuine engine error is the only thing that reaches
-        // the catch block below -- an interruption falls through to the
-        // generation check right after, same as normal completion.
-        await NativeTts.speak({
-          text: chunk.text,
-          rate: this.rate,
-          pitch: this.pitch,
-          voice: this.voiceIndex ?? undefined,
-        });
-      } catch {
-        if (myGeneration !== this.generation) return;
-        this.callbacks.onError?.("Speech error while reading this chapter.");
-        return;
-      }
-      if (myGeneration !== this.generation) return; // superseded by pause/stop/skip
-
-      this.chunkIndex++;
+  // Submits every remaining chunk (from chunkIndex onward) to the engine
+  // in one batch and lets it own the pacing between them entirely.
+  private submitBatch() {
+    const remaining = this.chunks.slice(this.chunkIndex);
+    if (remaining.length === 0) {
+      this.setState("ended");
+      this.callbacks.onChapterEnd?.();
+      return;
     }
-    if (myGeneration !== this.generation) return;
-    this.setState("ended");
-    this.callbacks.onChapterEnd?.();
+    const map = new Map<string, number>();
+    const payload: ChunkPayload[] = remaining.map((chunk, i) => {
+      const id = nextId();
+      map.set(id, this.chunkIndex + i);
+      return { id, text: chunk.text };
+    });
+    this.idToChunkIndex = map;
+    this.reportParagraph();
+    NativeTts.speakChunks({
+      chunks: payload,
+      rate: this.rate,
+      pitch: this.pitch,
+      voice: this.voiceIndex ?? undefined,
+    }).catch(() => {
+      this.callbacks.onError?.("Speech error while reading this chapter.");
+    });
+  }
+
+  private handleUtteranceStart(id: string) {
+    const idx = this.idToChunkIndex.get(id);
+    if (idx === undefined) return; // from a batch that's since been superseded
+    this.chunkIndex = idx;
+    this.reportParagraph();
+  }
+
+  private handleUtteranceDone(id: string) {
+    const idx = this.idToChunkIndex.get(id);
+    if (idx === undefined) return;
+    if (idx === this.chunks.length - 1) {
+      this.chunkIndex = this.chunks.length;
+      this.setState("ended");
+      this.callbacks.onChapterEnd?.();
+    }
+  }
+
+  private handleUtteranceError(id: string, message: string | undefined) {
+    if (this.idToChunkIndex.get(id) === undefined) return;
+    this.callbacks.onError?.(`Speech error: ${message ?? "unknown"}`);
   }
 }
