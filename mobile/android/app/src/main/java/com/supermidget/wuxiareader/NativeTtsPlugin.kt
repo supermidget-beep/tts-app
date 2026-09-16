@@ -1,7 +1,10 @@
 package com.supermidget.wuxiareader
 
+import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
+import android.media.AudioManager
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
@@ -14,26 +17,28 @@ import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 
-// A wrapper around android.speech.tts.TextToSpeech built around a
-// different model than the four previous attempts here (queue strategy,
-// chunk sizing, pinning every engine call to the main thread, a native
-// trailing-silence utterance for a guaranteed playback-drain signal) --
-// all of which clipped the last word of sentences identically. Every one
-// of those still called speak() for ONE sentence, awaited that sentence's
-// own completion signal in JS, and only THEN called speak() again for the
-// next one -- meaning every sentence boundary involved a JS<->native
-// round trip sitting in the middle of it.
-//
-// This instead submits every remaining sentence of the chapter to the
-// engine's own queue in a single batch (see speakChunks() below), all
-// via QUEUE_ADD, with no JS round-trip between any of them at all -- the
-// engine handles its own internal utterance-to-utterance pacing
-// entirely on its own, the same way Android's "Select to Speak" and
-// Chrome's Web Speech API implementation both do (and both read cleanly
-// on this device, unlike every JS-round-trip-gated version tried here).
+// A wrapper around android.speech.tts.TextToSpeech. After nine other
+// fixes (queue strategy, chunk sizing at both the sentence and near-
+// paragraph level, main-thread pinning, a native trailing-silence
+// utterance, batching a whole chapter into one native queue, playback
+// rate, three different TTS engines, and AudioAttributes tagging) all
+// clipped words identically, chunking text per WORD instead of per
+// sentence/paragraph (see splitIntoChunks() in tts.ts) turned out to be
+// what actually fixed it -- every remaining word of the chapter is
+// submitted to the engine's own queue in a single batch (speakChunks()
+// below), all via QUEUE_ADD, with no JS round-trip between any of them.
 // JS finds out what's currently playing via onStart/onDone events
 // (notifyListeners below) instead of gating the next speak() call on
 // anything.
+//
+// One-word utterances are choppier than sentence-level ones by nature
+// (no cross-word prosody), so every speak() call also carries a single,
+// constant audio session id (audioSessionId below) via
+// KEY_PARAM_SESSION_ID, hinting the engine to keep reusing the same
+// underlying audio session/AudioTrack across consecutive words instead
+// of tearing one down and standing up a fresh one for every single word
+// -- aimed at tightening the gap between words without giving up the
+// per-word chunking that fixed the clipping.
 @CapacitorPlugin(name = "NativeTts")
 class NativeTtsPlugin : Plugin() {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -41,8 +46,11 @@ class NativeTtsPlugin : Plugin() {
     private var ready = false
     private val pendingInitCalls = mutableListOf<() -> Unit>()
     private var sortedVoices: List<Voice> = emptyList()
+    private var audioSessionId = AudioManager.AUDIO_SESSION_ID_GENERATE
 
     override fun load() {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        audioSessionId = audioManager?.generateAudioSessionId() ?: AudioManager.AUDIO_SESSION_ID_GENERATE
         mainHandler.post {
             tts = TextToSpeech(context) { status ->
                 mainHandler.post {
@@ -142,6 +150,10 @@ class NativeTtsPlugin : Plugin() {
             if (voiceIndex in sortedVoices.indices) {
                 engine.setVoice(sortedVoices[voiceIndex])
             }
+            val params = Bundle()
+            if (audioSessionId != AudioManager.AUDIO_SESSION_ID_GENERATE) {
+                params.putInt(TextToSpeech.Engine.KEY_PARAM_SESSION_ID, audioSessionId)
+            }
             var ok = true
             for (i in 0 until chunks.length()) {
                 val obj = chunks.getJSONObject(i)
@@ -153,10 +165,8 @@ class NativeTtsPlugin : Plugin() {
                 // queue is already empty by the time this runs -- a
                 // QUEUE_FLUSH here would be redundant, and flushing forces
                 // the engine to internally stop-and-reset right at the
-                // moment the new first utterance needs to start, which is
-                // a plausible source of the first-word clipping some
-                // batches showed (as opposed to just the last word).
-                val result = engine.speak(text, TextToSpeech.QUEUE_ADD, null, id)
+                // moment the new first utterance needs to start.
+                val result = engine.speak(text, TextToSpeech.QUEUE_ADD, params, id)
                 if (result != TextToSpeech.SUCCESS) {
                     ok = false
                     break

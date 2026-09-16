@@ -39,15 +39,21 @@ site specifically doesn't work there.
     Target API the PWA uses.
   - `NativeTtsPlugin.kt` — a wrapper over `android.speech.tts.TextToSpeech`
     (replacing an earlier dependency on `@capacitor-community/text-to-
-    speech`). Submits every remaining sentence of a chapter to the
-    engine's own queue in one batch (`QUEUE_ADD`) instead of one `speak()`
-    call per sentence gated on JS awaiting each one's completion -- the
-    latter reliably clipped the last word of sentences no matter what was
-    tried against it (queue strategy, chunk sizing, pinning every engine
-    call to the main thread, a native trailing-silence utterance for a
-    guaranteed drain signal), because every sentence boundary had a
-    JS<->native round trip sitting inside it. Progress is tracked via
-    `utteranceStart`/`utteranceDone` events instead.
+    speech`). Submits every remaining *word* of a chapter to the engine's
+    own queue in one batch (`QUEUE_ADD`), tracking progress via
+    `utteranceStart`/`utteranceDone` events rather than gating each
+    `speak()` call on the previous one's completion. Getting here took a
+    long detour: an earlier version chunked by sentence (or even whole
+    paragraphs) instead of by word, which reliably clipped words no
+    matter what else was tried against it (queue strategy, chunk sizing,
+    pinning every engine call to the main thread, a native trailing-
+    silence utterance for a guaranteed drain signal, three different TTS
+    engines, disabling audio enhancement DSP, tagging the output as
+    accessibility speech via `AudioAttributes`). Chunking per word instead
+    of per sentence turned out to be what actually fixed it. Each
+    `speak()` call also carries a shared `KEY_PARAM_SESSION_ID` to keep
+    consecutive words on the same underlying audio session, smoothing the
+    gap between them.
 
 ## Getting the app onto your phone
 
