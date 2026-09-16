@@ -80,7 +80,7 @@ export function PlayerBar({
           <input
             type="range"
             min={0.5}
-            max={6}
+            max={10}
             step={0.05}
             value={settings.rate}
             onChange={(e) => onRateChange(Number(e.target.value))}
