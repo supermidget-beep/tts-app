@@ -67,7 +67,7 @@ export function Settings() {
         <input
           type="range"
           min={1}
-          max={60}
+          max={150}
           step={1}
           value={settings.wordsPerChunk}
           onChange={(e) => update({ wordsPerChunk: Number(e.target.value) })}
