@@ -125,15 +125,16 @@ class NativeTtsPlugin : Plugin() {
                 val obj = chunks.getJSONObject(i)
                 val id = obj.getString("id")
                 val text = obj.getString("text")
-                // The engine's queue should already be empty by the time
-                // this runs (JS always calls stop() before submitting a
-                // new batch), but flushing on the first chunk is a cheap
-                // safety net against anything left over regardless.
-                // Every chunk after that is QUEUE_ADD so the whole batch
-                // rides the engine's own queue with no gap between any
-                // two chunks for JS to introduce a round trip into.
-                val queueMode = if (i == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
-                val result = engine.speak(text, queueMode, null, id)
+                // Always QUEUE_ADD, including the first chunk: JS always
+                // calls stop() before submitting a new batch (see
+                // TtsController.interrupt() in tts.ts), so the engine's
+                // queue is already empty by the time this runs -- a
+                // QUEUE_FLUSH here would be redundant, and flushing forces
+                // the engine to internally stop-and-reset right at the
+                // moment the new first utterance needs to start, which is
+                // a plausible source of the first-word clipping some
+                // batches showed (as opposed to just the last word).
+                val result = engine.speak(text, TextToSpeech.QUEUE_ADD, null, id)
                 if (result != TextToSpeech.SUCCESS) {
                     ok = false
                     break
