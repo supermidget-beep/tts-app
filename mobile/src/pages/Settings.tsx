@@ -43,7 +43,7 @@ export function Settings() {
         <input
           type="range"
           min={0.5}
-          max={3}
+          max={6}
           step={0.05}
           value={settings.rate}
           onChange={(e) => update({ rate: Number(e.target.value) })}
