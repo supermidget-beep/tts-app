@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { fetchChapter, fetchToc, type ChapterData, type TocChapter } from "../lib/api";
-import { TtsController, getVoices, type PlaybackState, type SpeechSynthesisVoice } from "../lib/tts";
+import { TtsController, getVoices, type PlaybackState } from "../lib/tts";
 import { saveBookChapters, updateBookPosition, upsertBookFromChapter } from "../lib/storage";
 import { useTtsSettings } from "../lib/useTtsSettings";
 import { PlayerBar } from "../components/PlayerBar";
@@ -55,8 +55,8 @@ export function Reader() {
 
   useEffect(() => {
     if (!settingsLoaded || !controllerRef.current) return;
-    const idx = settings.voiceURI ? voices.findIndex((v) => v.voiceURI === settings.voiceURI) : -1;
-    controllerRef.current.setVoice(idx >= 0 ? idx : null);
+    const voice = settings.voiceURI ? voices.find((v) => v.voiceURI === settings.voiceURI) ?? null : null;
+    controllerRef.current.setVoice(voice);
   }, [settings.voiceURI, voices, settingsLoaded]);
 
   const loadChapter = useCallback(async (url: string, opts: { autoplay: boolean }) => {
