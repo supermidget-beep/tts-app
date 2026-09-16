@@ -46,7 +46,19 @@ interface NativeTtsPlugin {
 // engine to trip over.
 const NativeTts = registerPlugin<NativeTtsPlugin>("NativeTts");
 
-const MAX_CHUNK_LEN = 220;
+// Chunk boundaries earlier in this project's history (sentence-sized,
+// ~220 chars) were themselves suspected as a source of the clipping this
+// file has been fighting -- but that theory was only ever tested
+// alongside other bugs later ruled out (a thread-affinity bug in the old
+// plugin, in particular), never cleanly on its own. Raised close to
+// Android's per-utterance ceiling (getMaxSpeechInputLength() is
+// typically 4000) so most paragraphs collapse into a single speak() call
+// covering every sentence in them (splitIntoChunks still never spans
+// separate paragraphs, so this doesn't go as far as one call per
+// chapter) -- isolating whether the engine itself drops words at its own
+// internal sentence pauses within one utterance, independent of anything
+// this app chooses to do at the boundary between separate calls.
+const MAX_CHUNK_LEN = 3900;
 
 function splitIntoChunks(paragraphs: string[]): Chunk[] {
   const chunks: Chunk[] = [];
