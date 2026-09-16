@@ -1,23 +1,12 @@
-// Wraps the Web Speech API's SpeechSynthesis with paragraph-aware chunking
-// (utterances break on real punctuation, not mid-sentence), rate/pitch/voice
-// changes that take effect immediately, and an onChapterEnd hook used to
-// drive auto-advance to the next chapter.
-//
-// Capacitor apps run entirely inside a WebView, so window.speechSynthesis
-// is available here exactly as it is in web/ -- no native plugin needed.
-// This replaces a from-scratch NativeTtsPlugin.kt wrapper around
-// android.speech.tts.TextToSpeech that, across several different fixes
-// (queue strategy, chunk sizing, main-thread pinning, a native trailing-
-// silence utterance for a guaranteed drain), reliably clipped the last
-// word of sentences no matter what was tried against it. Android's own
-// "Select to Speak" accessibility feature read the same device/voice
-// cleanly, which already ruled out the engine/voice itself; testing
-// confirmed the web app's Web Speech API-based TTS (this same code) also
-// reads cleanly on the same device, which points the remaining blame
-// squarely at something specific to driving android.speech.tts.
-// TextToSpeech directly, not at anything fixable from this app's side of
-// that API. Web Speech API in the WebView goes through Chromium's own
-// speech-dispatch code instead, a different path that isn't affected.
+import { registerPlugin } from "@capacitor/core";
+
+export interface SpeechSynthesisVoice {
+  voiceURI: string;
+  name: string;
+  lang: string;
+  localService: boolean;
+  default: boolean;
+}
 
 export type PlaybackState = "idle" | "playing" | "paused" | "ended";
 
@@ -25,6 +14,30 @@ interface Chunk {
   text: string;
   paragraphIndex: number;
 }
+
+interface NativeTtsPlugin {
+  speak(options: { text: string; rate: number; pitch: number; voice?: number }): Promise<void>;
+  stop(): Promise<void>;
+  getVoices(): Promise<{ voices: SpeechSynthesisVoice[] }>;
+  openInstall(): Promise<void>;
+}
+
+// Backed by android/.../NativeTtsPlugin.kt -- a from-scratch replacement
+// for @capacitor-community/text-to-speech, written after that plugin
+// reliably clipped the last word of sentences no matter what was tried
+// against it from this side (QueueStrategy.Add instead of Flush,
+// whole-paragraph chunks instead of sentence-sized ones, an explicit
+// pause between chunks), while Android's own "Select to Speak" reads the
+// exact same device/voice with no clipping at all. That ruled out the
+// engine/voice itself and pointed at how the community plugin drives it:
+// its native speak()/stop()/setSpeechRate() etc. are never explicitly
+// dispatched to the main thread, and android.speech.tts.TextToSpeech is
+// documented to expect being driven consistently from one thread.
+// NativeTtsPlugin.kt pins every engine interaction to the main thread
+// instead (the same pattern ChapterExtractorPlugin.kt already used
+// successfully), and its stop() properly resolves any pending speak()
+// call rather than leaving it hanging forever.
+const NativeTts = registerPlugin<NativeTtsPlugin>("NativeTts");
 
 const MAX_CHUNK_LEN = 220;
 
@@ -51,22 +64,23 @@ function splitIntoChunks(paragraphs: string[]): Chunk[] {
   return chunks;
 }
 
-export function getVoices(): Promise<SpeechSynthesisVoice[]> {
-  const synth = window.speechSynthesis;
-  const existing = synth.getVoices();
-  if (existing.length > 0) return Promise.resolve(existing);
-  return new Promise((resolve) => {
-    const handle = () => {
-      const voices = synth.getVoices();
-      if (voices.length > 0) {
-        synth.removeEventListener("voiceschanged", handle);
-        resolve(voices);
-      }
-    };
-    synth.addEventListener("voiceschanged", handle);
-    // Some browsers never fire the event if voices load synchronously late.
-    setTimeout(() => resolve(synth.getVoices()), 1000);
-  });
+let voicesCache: SpeechSynthesisVoice[] | null = null;
+
+export async function getVoices(forceRefresh = false): Promise<SpeechSynthesisVoice[]> {
+  if (!voicesCache || forceRefresh) {
+    const { voices } = await NativeTts.getVoices();
+    voicesCache = voices;
+  }
+  return voicesCache;
+}
+
+// Opens Android's system screen for installing/managing TTS voice data
+// (Settings > Text-to-speech). This is how you get higher-quality voices
+// (e.g. Google's "Wavenet"-style natural voices) beyond whatever shipped
+// on the device by default -- it's a system-level install, not something
+// this app can do on its own.
+export function openVoiceInstall(): Promise<void> {
+  return NativeTts.openInstall();
 }
 
 export interface TtsCallbacks {
@@ -76,12 +90,16 @@ export interface TtsCallbacks {
   onError?: (message: string) => void;
 }
 
+// Unlike the old community plugin, NativeTtsPlugin's stop() explicitly
+// resolves any pending speak() call, so a still-in-flight chunk always
+// settles the moment playback is interrupted -- no cancel-race/hanging-
+// promise workaround needed here.
 export class TtsController {
   private chunks: Chunk[] = [];
   private chunkIndex = 0;
   private rate: number;
   private pitch: number;
-  private voice: SpeechSynthesisVoice | null;
+  private voiceIndex: number | null = null;
   private state: PlaybackState = "idle";
   private callbacks: TtsCallbacks;
   private lastReportedParagraph = -1;
@@ -90,13 +108,11 @@ export class TtsController {
   constructor(rate: number, pitch: number, callbacks: TtsCallbacks = {}) {
     this.rate = rate;
     this.pitch = pitch;
-    this.voice = null;
     this.callbacks = callbacks;
   }
 
   loadParagraphs(paragraphs: string[], startParagraphIndex = 0) {
-    window.speechSynthesis.cancel();
-    this.generation++;
+    this.interrupt();
     this.chunks = splitIntoChunks(paragraphs);
     this.chunkIndex = this.chunks.findIndex((c) => c.paragraphIndex >= startParagraphIndex);
     if (this.chunkIndex < 0) this.chunkIndex = 0;
@@ -104,8 +120,8 @@ export class TtsController {
     this.setState("idle");
   }
 
-  setVoice(voice: SpeechSynthesisVoice | null) {
-    this.voice = voice;
+  setVoice(voiceIndex: number | null) {
+    this.voiceIndex = voiceIndex;
     if (this.state === "playing") this.restartCurrentChunk();
   }
 
@@ -120,25 +136,19 @@ export class TtsController {
   }
 
   play() {
-    if (this.chunks.length === 0) return;
-    if (this.state === "paused" && window.speechSynthesis.paused) {
-      window.speechSynthesis.resume();
-      this.setState("playing");
-      return;
-    }
+    if (this.chunks.length === 0 || this.state === "playing") return;
     this.setState("playing");
-    this.speakCurrentChunk();
+    void this.runLoop();
   }
 
   pause() {
     if (this.state !== "playing") return;
-    window.speechSynthesis.pause();
+    this.interrupt();
     this.setState("paused");
   }
 
   stop() {
-    window.speechSynthesis.cancel();
-    this.generation++;
+    this.interrupt();
     this.setState("idle");
   }
 
@@ -171,21 +181,25 @@ export class TtsController {
 
   private jumpToChunk(index: number) {
     const wasPlaying = this.state === "playing";
-    window.speechSynthesis.cancel();
-    this.generation++;
+    this.interrupt();
     this.chunkIndex = index;
     if (wasPlaying) {
       this.setState("playing");
-      this.speakCurrentChunk();
+      void this.runLoop();
     } else {
       this.reportParagraph();
     }
   }
 
   private restartCurrentChunk() {
-    window.speechSynthesis.cancel();
+    this.interrupt();
+    this.setState("playing");
+    void this.runLoop();
+  }
+
+  private interrupt() {
     this.generation++;
-    this.speakCurrentChunk();
+    void NativeTts.stop();
   }
 
   private setState(state: PlaybackState) {
@@ -201,32 +215,38 @@ export class TtsController {
     }
   }
 
-  private speakCurrentChunk() {
-    const chunk = this.chunks[this.chunkIndex];
-    if (!chunk) {
-      this.setState("ended");
-      this.callbacks.onChapterEnd?.();
-      return;
-    }
-    this.reportParagraph();
-
-    const utterance = new SpeechSynthesisUtterance(chunk.text);
-    utterance.rate = this.rate;
-    utterance.pitch = this.pitch;
-    if (this.voice) utterance.voice = this.voice;
-
+  private async runLoop() {
+    // The generation check after each await is what keeps only one loop's
+    // iterations taking effect: a superseded loop (pause/stop/skip/rate-
+    // pitch-voice change firing mid-chunk) always hits that check and
+    // returns before speaking again.
     const myGeneration = this.generation;
-    utterance.onend = () => {
-      if (myGeneration !== this.generation) return; // superseded by a skip/restart
-      this.chunkIndex++;
-      if (this.state === "playing") this.speakCurrentChunk();
-    };
-    utterance.onerror = (event) => {
-      if (myGeneration !== this.generation) return;
-      if (event.error === "interrupted" || event.error === "canceled") return;
-      this.callbacks.onError?.(`Speech error: ${event.error}`);
-    };
+    while (this.chunkIndex < this.chunks.length) {
+      this.reportParagraph();
+      const chunk = this.chunks[this.chunkIndex];
 
-    window.speechSynthesis.speak(utterance);
+      try {
+        // interrupt()'s stop() resolves (not rejects) any pending speak()
+        // call, so a genuine engine error is the only thing that reaches
+        // the catch block below -- an interruption falls through to the
+        // generation check right after, same as normal completion.
+        await NativeTts.speak({
+          text: chunk.text,
+          rate: this.rate,
+          pitch: this.pitch,
+          voice: this.voiceIndex ?? undefined,
+        });
+      } catch {
+        if (myGeneration !== this.generation) return;
+        this.callbacks.onError?.("Speech error while reading this chapter.");
+        return;
+      }
+      if (myGeneration !== this.generation) return; // superseded by pause/stop/skip
+
+      this.chunkIndex++;
+    }
+    if (myGeneration !== this.generation) return;
+    this.setState("ended");
+    this.callbacks.onChapterEnd?.();
   }
 }

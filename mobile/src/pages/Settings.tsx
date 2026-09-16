@@ -1,16 +1,26 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getVoices } from "../lib/tts";
+import { getVoices, openVoiceInstall, type SpeechSynthesisVoice } from "../lib/tts";
 import { useTtsSettings } from "../lib/useTtsSettings";
 
 export function Settings() {
   const navigate = useNavigate();
   const { settings, update, loaded } = useTtsSettings();
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     getVoices().then(setVoices);
   }, []);
+
+  const refreshVoices = async () => {
+    setRefreshing(true);
+    try {
+      setVoices(await getVoices(true));
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   if (!loaded) return null;
 
@@ -67,12 +77,22 @@ export function Settings() {
         </select>
       </label>
 
-      <p className="hint">
-        Want more natural-sounding voices? These come from your phone's system
-        text-to-speech engine, not this app. On Android: Settings → System → Languages &amp;
-        input → Text-to-speech output → (your engine, e.g. Google) → install a higher-quality
-        "natural" voice, then reopen this page.
-      </p>
+      <div className="settings-row">
+        Want more natural-sounding voices?
+        <span className="hint">
+          Voices come from your phone's system text-to-speech engine, not this app. Google's
+          engine offers higher-quality "natural" voices as a separate download — tap below to
+          open the install screen, download one, then come back and tap "Refresh voice list."
+        </span>
+        <div className="settings-actions">
+          <button type="button" onClick={() => openVoiceInstall()}>
+            Get more voices
+          </button>
+          <button type="button" onClick={refreshVoices} disabled={refreshing}>
+            {refreshing ? "Refreshing…" : "Refresh voice list"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

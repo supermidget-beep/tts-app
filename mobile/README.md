@@ -15,9 +15,8 @@ like your own Chrome would, then runs
 next/prev/table-of-contents link heuristics as the backend — but injected
 into that loaded page's own JavaScript context instead of running on a
 server. There is no backend for this app; everything happens on-device.
-Reading uses the same Web Speech API-based TTS as `web/` — Capacitor apps
-run entirely inside a WebView, so it's available here too with no native
-plugin needed.
+Reading uses Android's native `TextToSpeech` engine instead of the Web
+Speech API.
 
 If the sites you read aren't behind that kind of protection, the [web
 app](../web) is simpler to install (no sideloading) — use this one when a
@@ -28,8 +27,8 @@ site specifically doesn't work there.
 - `src/` — the same React reader UI/pattern as `web/`: a Library
   (IndexedDB-backed, same schema), a Reader with the play/pause/speed/
   pitch/voice player bar, and Settings.
-- `android/` — the native shell. Custom Kotlin pieces beyond Capacitor's
-  defaults:
+- `android/` — the native shell. Two custom Kotlin pieces beyond
+  Capacitor's defaults:
   - `ChapterExtractorPlugin.kt` — creates a hidden `WebView`, loads a URL,
     waits for it to go quiet (a Cloudflare interstitial redirects to the
     real page after solving its own challenge, so a page can finish
@@ -38,21 +37,12 @@ site specifically doesn't work there.
   - `MainActivity.kt` / `ShareReceiverPlugin.kt` — Android's native
     "Share" sheet (`ACTION_SEND` intent-filter) instead of the Web Share
     Target API the PWA uses.
-
-  There used to be a third piece here, `NativeTtsPlugin.kt`, a from-
-  scratch wrapper over `android.speech.tts.TextToSpeech` (itself
-  replacing an earlier dependency on `@capacitor-community/text-to-
-  speech`). Both reliably clipped the last word of sentences no matter
-  what was tried against them (queue strategy, chunk sizing, pinning
-  every engine call to the main thread, even a native trailing-silence
-  utterance to force a real playback-drain guarantee). Android's own
-  "Select to Speak" accessibility feature read the same device/voice
-  cleanly, and so did the web app's Web Speech API-based TTS on the same
-  device -- which narrowed the fault down to something specific to
-  driving `android.speech.tts.TextToSpeech` directly, not fixable from
-  this app's side of that API. Reading now goes through the WebView's own
-  `window.speechSynthesis` instead (`src/lib/tts.ts`, shared with
-  `web/`), which isn't affected.
+  - `NativeTtsPlugin.kt` — a from-scratch wrapper over
+    `android.speech.tts.TextToSpeech` (replacing an earlier dependency on
+    `@capacitor-community/text-to-speech`, which reliably clipped the last
+    word of sentences). Every interaction with the engine is explicitly
+    pinned to the main thread, since `TextToSpeech` expects to be driven
+    consistently from one thread.
 
 ## Getting the app onto your phone
 
