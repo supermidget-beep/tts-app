@@ -28,43 +28,37 @@ interface NativeTtsPlugin {
   addListener(eventName: string, listenerFunc: (data: { id: string; message?: string }) => void): Promise<PluginListenerHandle>;
 }
 
-// Backed by android/.../NativeTtsPlugin.kt. Four previous approaches here
-// (QueueStrategy.Add instead of Flush, whole-paragraph chunks instead of
-// sentence-sized ones, pinning every engine call to the main thread, a
-// native trailing-silence utterance meant to force a genuine playback-
-// drain guarantee before resolving) all clipped the last word of
-// sentences identically -- every one of them still called speak() for one
-// sentence, awaited that sentence's own completion in JS, and only then
-// called speak() again, putting a JS<->native round trip in the middle of
-// every sentence boundary.
-//
-// This instead submits every remaining sentence of the chapter to the
-// engine's own QUEUE_ADD queue in a single batch (speakChunks below) and
-// tracks progress via events (utteranceStart/utteranceDone) instead of
-// gating each speak() call on the previous one settling -- there's no
-// longer a JS round trip sitting inside any sentence boundary for the
-// engine to trip over.
+// Backed by android/.../NativeTtsPlugin.kt. Every remaining chunk of the
+// chapter is submitted to the engine's own QUEUE_ADD queue in a single
+// batch (speakChunks below), tracking progress via events
+// (utteranceStart/utteranceDone) instead of gating each speak() call on
+// the previous one settling -- there's no JS round trip sitting inside
+// any chunk boundary for the engine to trip over. What actually fixed a
+// long-standing word-dropping bug wasn't this batching (tried and ruled
+// out on its own) but chunking per word instead of per sentence -- see
+// the comment on splitIntoChunks() below for the rest of that history.
 const NativeTts = registerPlugin<NativeTtsPlugin>("NativeTts");
 
-// Chunk granularity has now been tested at both extremes with the exact
-// same result: sentence-sized (~220 chars, many speak() calls queued
-// together) and near Android's ~4000-char per-utterance ceiling (most
-// paragraphs collapsed into ONE speak() call, clipping still happening
-// at sentence pauses *inside* that single call) both lose words
-// identically. That rules out this app's own chunk boundaries as the
-// cause either way. This goes to the opposite extreme -- one word per
-// chunk/utterance -- as a diagnostic: if the words that drop are no
-// longer specifically the last (or first) word of a sentence but appear
-// scattered through the middle too, that points to something tied to
-// elapsed playback time (a periodic glitch) rather than anything
-// sentence-boundary-shaped. Expect noticeably choppier delivery than
-// sentence-level chunking (no natural prosody across word boundaries) --
-// this is diagnostic, not the intended end state.
+// Chunk granularity has been tested from sentence-sized (~220 chars) up
+// to near Android's ~4000-char per-utterance ceiling (whole paragraphs
+// as one speak() call) -- both lost words identically. Chunking one word
+// per utterance was what actually fixed the clipping, confirmed by
+// testing on-device, but it's slow and choppy: every word is its own
+// speak() call, with none of the natural cross-word prosody a real
+// sentence gets, and per-utterance overhead accumulates across a whole
+// chapter's worth of individually-queued words. Grouping a handful of
+// words per chunk is a middle ground worth checking: enough utterance
+// boundaries close together that whatever fixed the one-word case should
+// still apply, but far fewer of them than one-per-word, so both the
+// per-utterance overhead and the choppiness should drop substantially.
+const WORDS_PER_CHUNK = 5;
+
 function splitIntoChunks(paragraphs: string[]): Chunk[] {
   const chunks: Chunk[] = [];
   paragraphs.forEach((paragraph, paragraphIndex) => {
-    for (const word of paragraph.split(/\s+/)) {
-      if (word) chunks.push({ text: word, paragraphIndex });
+    const words = paragraph.split(/\s+/).filter(Boolean);
+    for (let i = 0; i < words.length; i += WORDS_PER_CHUNK) {
+      chunks.push({ text: words.slice(i, i + WORDS_PER_CHUNK).join(" "), paragraphIndex });
     }
   });
   return chunks;
