@@ -1,6 +1,7 @@
 package com.supermidget.wuxiareader
 
 import android.content.Intent
+import android.media.AudioAttributes
 import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
@@ -48,6 +49,27 @@ class NativeTtsPlugin : Plugin() {
                     ready = status == TextToSpeech.SUCCESS
                     if (ready) {
                         sortedVoices = (tts?.voices ?: emptySet()).sortedBy { it.name }
+                        // Untested until now: every previous fix here left
+                        // the engine on its default AudioAttributes, which
+                        // android.speech.tts.TextToSpeech treats like
+                        // generic media playback. Android's own "Select to
+                        // Speak" (which reads this same device cleanly) is
+                        // an accessibility service and can reasonably be
+                        // assumed to tag its output as accessibility
+                        // speech, which the OS audio HAL can legitimately
+                        // give different stream setup/teardown handling
+                        // than plain media -- a real, previously-untried
+                        // lever for exactly the per-utterance clipping
+                        // seen here, independent of queue strategy, chunk
+                        // size, threading, or which engine is doing the
+                        // synthesizing (all four of which are now ruled
+                        // out).
+                        tts?.setAudioAttributes(
+                            AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                .build(),
+                        )
                         tts?.setOnUtteranceProgressListener(
                             object : UtteranceProgressListener() {
                                 override fun onStart(utteranceId: String?) {
