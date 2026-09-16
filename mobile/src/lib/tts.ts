@@ -46,39 +46,26 @@ interface NativeTtsPlugin {
 // engine to trip over.
 const NativeTts = registerPlugin<NativeTtsPlugin>("NativeTts");
 
-// Chunk boundaries earlier in this project's history (sentence-sized,
-// ~220 chars) were themselves suspected as a source of the clipping this
-// file has been fighting -- but that theory was only ever tested
-// alongside other bugs later ruled out (a thread-affinity bug in the old
-// plugin, in particular), never cleanly on its own. Raised close to
-// Android's per-utterance ceiling (getMaxSpeechInputLength() is
-// typically 4000) so most paragraphs collapse into a single speak() call
-// covering every sentence in them (splitIntoChunks still never spans
-// separate paragraphs, so this doesn't go as far as one call per
-// chapter) -- isolating whether the engine itself drops words at its own
-// internal sentence pauses within one utterance, independent of anything
-// this app chooses to do at the boundary between separate calls.
-const MAX_CHUNK_LEN = 3900;
-
+// Chunk granularity has now been tested at both extremes with the exact
+// same result: sentence-sized (~220 chars, many speak() calls queued
+// together) and near Android's ~4000-char per-utterance ceiling (most
+// paragraphs collapsed into ONE speak() call, clipping still happening
+// at sentence pauses *inside* that single call) both lose words
+// identically. That rules out this app's own chunk boundaries as the
+// cause either way. This goes to the opposite extreme -- one word per
+// chunk/utterance -- as a diagnostic: if the words that drop are no
+// longer specifically the last (or first) word of a sentence but appear
+// scattered through the middle too, that points to something tied to
+// elapsed playback time (a periodic glitch) rather than anything
+// sentence-boundary-shaped. Expect noticeably choppier delivery than
+// sentence-level chunking (no natural prosody across word boundaries) --
+// this is diagnostic, not the intended end state.
 function splitIntoChunks(paragraphs: string[]): Chunk[] {
   const chunks: Chunk[] = [];
   paragraphs.forEach((paragraph, paragraphIndex) => {
-    const sentences = paragraph.match(/[^.!?]+[.!?]*(\s+|$)/g) ?? [paragraph];
-    let buffer = "";
-    for (const sentence of sentences) {
-      if ((buffer + sentence).length > MAX_CHUNK_LEN && buffer) {
-        chunks.push({ text: buffer.trim(), paragraphIndex });
-        buffer = "";
-      }
-      buffer += sentence;
-      while (buffer.length > MAX_CHUNK_LEN) {
-        let cut = buffer.lastIndexOf(" ", MAX_CHUNK_LEN);
-        if (cut <= 0) cut = MAX_CHUNK_LEN;
-        chunks.push({ text: buffer.slice(0, cut).trim(), paragraphIndex });
-        buffer = buffer.slice(cut).trim();
-      }
+    for (const word of paragraph.split(/\s+/)) {
+      if (word) chunks.push({ text: word, paragraphIndex });
     }
-    if (buffer.trim()) chunks.push({ text: buffer.trim(), paragraphIndex });
   });
   return chunks;
 }
