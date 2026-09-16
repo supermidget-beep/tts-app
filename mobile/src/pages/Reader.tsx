@@ -37,7 +37,7 @@ export function Reader() {
 
   useEffect(() => {
     if (!settingsLoaded || controllerRef.current) return;
-    controllerRef.current = new TtsController(settings.rate, settings.pitch, {
+    controllerRef.current = new TtsController(settings.rate, settings.pitch, settings.wordsPerChunk, {
       onStateChange: setPlaybackState,
       onParagraphChange: setCurrentParagraph,
       onChapterEnd: () => {
@@ -47,7 +47,7 @@ export function Reader() {
       onError: (message) => setError(message),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settingsLoaded, settings.rate, settings.pitch]);
+  }, [settingsLoaded, settings.rate, settings.pitch, settings.wordsPerChunk]);
 
   useEffect(() => {
     getVoices().then(setVoices);
@@ -206,6 +206,10 @@ export function Reader() {
             controllerRef.current?.setPitch(pitch);
           }}
           onVoiceChange={(voiceURI) => updateSettings({ voiceURI: voiceURI || null })}
+          onWordsPerChunkChange={(wordsPerChunk) => {
+            updateSettings({ wordsPerChunk });
+            controllerRef.current?.setWordsPerChunk(wordsPerChunk);
+          }}
         />
       )}
     </div>

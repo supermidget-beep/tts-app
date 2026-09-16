@@ -47,18 +47,21 @@ const NativeTts = registerPlugin<NativeTtsPlugin>("NativeTts");
 // speak() call, with none of the natural cross-word prosody a real
 // sentence gets, and per-utterance overhead accumulates across a whole
 // chapter's worth of individually-queued words. Grouping a handful of
-// words per chunk is a middle ground worth checking: enough utterance
-// boundaries close together that whatever fixed the one-word case should
-// still apply, but far fewer of them than one-per-word, so both the
-// per-utterance overhead and the choppiness should drop substantially.
-const WORDS_PER_CHUNK = 5;
+// words per chunk is a middle ground: enough utterance boundaries close
+// together that whatever fixed the one-word case should still apply, but
+// far fewer of them than one-per-word, so both the per-utterance
+// overhead and the choppiness should drop. The right group size for this
+// trade-off isn't known yet, so it's a user-adjustable setting
+// (TtsSettings.wordsPerChunk) rather than a fixed constant -- see
+// setWordsPerChunk() below for changing it live, mid-chapter.
+export const DEFAULT_WORDS_PER_CHUNK = 5;
 
-function splitIntoChunks(paragraphs: string[]): Chunk[] {
+function splitIntoChunks(paragraphs: string[], wordsPerChunk: number): Chunk[] {
   const chunks: Chunk[] = [];
   paragraphs.forEach((paragraph, paragraphIndex) => {
     const words = paragraph.split(/\s+/).filter(Boolean);
-    for (let i = 0; i < words.length; i += WORDS_PER_CHUNK) {
-      chunks.push({ text: words.slice(i, i + WORDS_PER_CHUNK).join(" "), paragraphIndex });
+    for (let i = 0; i < words.length; i += wordsPerChunk) {
+      chunks.push({ text: words.slice(i, i + wordsPerChunk).join(" "), paragraphIndex });
     }
   });
   return chunks;
@@ -97,6 +100,8 @@ export interface TtsCallbacks {
 }
 
 export class TtsController {
+  private paragraphs: string[] = [];
+  private wordsPerChunk: number;
   private chunks: Chunk[] = [];
   private chunkIndex = 0;
   private rate: number;
@@ -108,13 +113,15 @@ export class TtsController {
   // Maps an utterance id from the currently-submitted batch back to its
   // index into `chunks`. Replaced wholesale on every submitBatch() call,
   // so an event from a batch that's since been superseded (pause/stop/
-  // skip/rate-pitch-voice change) simply won't be found here and is
-  // ignored -- no separate generation counter needed for that.
+  // skip/rate-pitch-voice/wordsPerChunk change) simply won't be found
+  // here and is ignored -- no separate generation counter needed for
+  // that.
   private idToChunkIndex = new Map<string, number>();
 
-  constructor(rate: number, pitch: number, callbacks: TtsCallbacks = {}) {
+  constructor(rate: number, pitch: number, wordsPerChunk: number, callbacks: TtsCallbacks = {}) {
     this.rate = rate;
     this.pitch = pitch;
+    this.wordsPerChunk = wordsPerChunk;
     this.callbacks = callbacks;
     void NativeTts.addListener("utteranceStart", ({ id }) => this.handleUtteranceStart(id));
     void NativeTts.addListener("utteranceDone", ({ id }) => this.handleUtteranceDone(id));
@@ -123,7 +130,8 @@ export class TtsController {
 
   loadParagraphs(paragraphs: string[], startParagraphIndex = 0) {
     this.interrupt();
-    this.chunks = splitIntoChunks(paragraphs);
+    this.paragraphs = paragraphs;
+    this.chunks = splitIntoChunks(paragraphs, this.wordsPerChunk);
     this.chunkIndex = this.chunks.findIndex((c) => c.paragraphIndex >= startParagraphIndex);
     if (this.chunkIndex < 0) this.chunkIndex = 0;
     this.lastReportedParagraph = -1;
@@ -133,6 +141,28 @@ export class TtsController {
   setVoice(voiceIndex: number | null) {
     this.voiceIndex = voiceIndex;
     if (this.state === "playing") this.restartCurrentChunk();
+  }
+
+  // Re-chunks the currently-loaded paragraphs at a new group size,
+  // resuming from the same paragraph that was current before the change
+  // (chunk-level position within that paragraph isn't preserved, same
+  // trade-off as a rate/pitch/voice change mid-chunk).
+  setWordsPerChunk(wordsPerChunk: number) {
+    if (this.wordsPerChunk === wordsPerChunk) return;
+    this.wordsPerChunk = wordsPerChunk;
+    if (this.paragraphs.length === 0) return;
+    const currentParagraph = this.chunks[this.chunkIndex]?.paragraphIndex ?? 0;
+    const wasPlaying = this.state === "playing";
+    this.interrupt();
+    this.chunks = splitIntoChunks(this.paragraphs, this.wordsPerChunk);
+    this.chunkIndex = this.chunks.findIndex((c) => c.paragraphIndex >= currentParagraph);
+    if (this.chunkIndex < 0) this.chunkIndex = 0;
+    if (wasPlaying) {
+      this.setState("playing");
+      this.submitBatch();
+    } else {
+      this.reportParagraph();
+    }
   }
 
   setRate(rate: number) {

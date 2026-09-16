@@ -18,6 +18,7 @@ export interface TtsSettings {
   rate: number;
   pitch: number;
   voiceURI: string | null;
+  wordsPerChunk: number;
 }
 
 interface ReaderDB extends DBSchema {
@@ -162,12 +163,15 @@ export async function deleteBook(id: string): Promise<void> {
   await db.delete("books", id);
 }
 
-const DEFAULT_TTS_SETTINGS: TtsSettings = { rate: 1, pitch: 1, voiceURI: null };
+const DEFAULT_TTS_SETTINGS: TtsSettings = { rate: 1, pitch: 1, voiceURI: null, wordsPerChunk: 5 };
 
 export async function loadTtsSettings(): Promise<TtsSettings> {
   const db = await getDb();
   const value = (await db.get("settings", "tts")) as TtsSettings | undefined;
-  return value ?? DEFAULT_TTS_SETTINGS;
+  // Spread over the defaults (not just a top-level "??") so settings saved
+  // before a new TtsSettings field existed -- wordsPerChunk, previously --
+  // still come back with a valid value for it instead of undefined.
+  return { ...DEFAULT_TTS_SETTINGS, ...value };
 }
 
 export async function saveTtsSettings(settings: TtsSettings): Promise<void> {

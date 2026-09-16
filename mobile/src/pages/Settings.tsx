@@ -63,6 +63,23 @@ export function Settings() {
       </label>
 
       <label className="settings-row">
+        Default words per chunk <span>{settings.wordsPerChunk}</span>
+        <input
+          type="range"
+          min={1}
+          max={60}
+          step={1}
+          value={settings.wordsPerChunk}
+          onChange={(e) => update({ wordsPerChunk: Number(e.target.value) })}
+        />
+      </label>
+      <p className="hint">
+        How many words get grouped into one TTS request. Lower is more reliable but choppier;
+        higher reads more naturally but can drop words on some devices/engines. You can also
+        adjust this live from the player while reading.
+      </p>
+
+      <label className="settings-row">
         Voice
         <select
           value={settings.voiceURI ?? ""}

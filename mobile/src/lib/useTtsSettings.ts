@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { loadTtsSettings, saveTtsSettings, type TtsSettings } from "./storage";
 
 export function useTtsSettings() {
-  const [settings, setSettings] = useState<TtsSettings>({ rate: 1, pitch: 1, voiceURI: null });
+  const [settings, setSettings] = useState<TtsSettings>({ rate: 1, pitch: 1, voiceURI: null, wordsPerChunk: 5 });
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {

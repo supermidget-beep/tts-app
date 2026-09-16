@@ -15,6 +15,7 @@ interface Props {
   onRateChange: (rate: number) => void;
   onPitchChange: (pitch: number) => void;
   onVoiceChange: (voiceURI: string) => void;
+  onWordsPerChunkChange: (wordsPerChunk: number) => void;
 }
 
 export function PlayerBar({
@@ -31,6 +32,7 @@ export function PlayerBar({
   onRateChange,
   onPitchChange,
   onVoiceChange,
+  onWordsPerChunkChange,
 }: Props) {
   return (
     <div className="player-bar">
@@ -110,6 +112,17 @@ export function PlayerBar({
               </option>
             ))}
           </select>
+        </label>
+        <label>
+          Words/chunk <span>{settings.wordsPerChunk}</span>
+          <input
+            type="range"
+            min={1}
+            max={60}
+            step={1}
+            value={settings.wordsPerChunk}
+            onChange={(e) => onWordsPerChunkChange(Number(e.target.value))}
+          />
         </label>
       </div>
     </div>
