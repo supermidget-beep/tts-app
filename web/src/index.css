@@ -177,6 +177,14 @@ select {
   color: var(--fg-dim);
 }
 
+.history-back {
+  background: none;
+  border: none;
+  padding: 0.25rem 0.5rem;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+
 .chapter-jump {
   max-width: 60%;
 }

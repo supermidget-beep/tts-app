@@ -12,7 +12,15 @@ export interface BookRecord {
   favorite: boolean;
   addedAt: number;
   updatedAt: number;
+  // Previously-visited chapter URLs for this book, oldest first, capped
+  // at MAX_HISTORY entries -- lets "Back" return to where you actually
+  // came from (auto-advance, a TOC jump, a fresh shared link) rather
+  // than wherever the site's own "previous chapter" link happens to
+  // point, which can disagree with reading order or be missing entirely.
+  history: string[];
 }
+
+const MAX_HISTORY = 10;
 
 export interface TtsSettings {
   rate: number;
@@ -103,6 +111,7 @@ export async function upsertBookFromChapter(chapter: ChapterData): Promise<BookR
     favorite: existing?.favorite ?? false,
     addedAt: existing?.addedAt ?? now,
     updatedAt: now,
+    history: existing?.history ?? [],
   };
   await db.put("books", record);
   return record;
@@ -128,14 +137,27 @@ export async function updateBookPosition(
   bookId: string,
   chapterUrl: string,
   chapterTitle: string,
+  opts: { isBack?: boolean } = {},
 ): Promise<BookRecord | undefined> {
   const db = await getDb();
   const existing = await db.get("books", bookId);
   if (!existing) return undefined;
+  const history = existing.history ?? [];
+  let nextHistory = history;
+  if (opts.isBack) {
+    // The last entry is where we're stepping back TO -- drop it instead
+    // of recording this move as a new step. No separate forward/redo
+    // stack is kept, so going back once and then forward again just
+    // re-adds this chapter to history like any other navigation would.
+    nextHistory = history.slice(0, -1);
+  } else if (existing.currentUrl && existing.currentUrl !== chapterUrl) {
+    nextHistory = [...history, existing.currentUrl].slice(-MAX_HISTORY);
+  }
   const record: BookRecord = {
     ...existing,
     currentUrl: chapterUrl,
     currentTitle: chapterTitle,
+    history: nextHistory,
     updatedAt: Date.now(),
   };
   await db.put("books", record);

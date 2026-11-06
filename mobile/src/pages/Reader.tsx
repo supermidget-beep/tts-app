@@ -14,6 +14,7 @@ export function Reader() {
 
   const [chapter, setChapter] = useState<ChapterData | null>(null);
   const [chapters, setChapters] = useState<TocChapter[] | null>(null);
+  const [history, setHistory] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [playbackState, setPlaybackState] = useState<PlaybackState>("idle");
@@ -59,7 +60,7 @@ export function Reader() {
     controllerRef.current.setVoice(idx >= 0 ? idx : null);
   }, [settings.voiceURI, voices, settingsLoaded]);
 
-  const loadChapter = useCallback(async (url: string, opts: { autoplay: boolean }) => {
+  const loadChapter = useCallback(async (url: string, opts: { autoplay: boolean; isBack?: boolean }) => {
     setLoading(true);
     setError(null);
     try {
@@ -70,11 +71,12 @@ export function Reader() {
 
       const knownBookId = bookIdRef.current;
       const book = knownBookId
-        ? ((await updateBookPosition(knownBookId, data.sourceUrl, data.title)) ??
+        ? ((await updateBookPosition(knownBookId, data.sourceUrl, data.title, { isBack: opts.isBack })) ??
           (await upsertBookFromChapter(data)))
         : await upsertBookFromChapter(data);
       bookIdRef.current = book.id;
       setChapters(book.chapters);
+      setHistory(book.history);
 
       controllerRef.current?.loadParagraphs(data.paragraphs, 0);
       if (opts.autoplay) controllerRef.current?.play();
@@ -127,6 +129,21 @@ export function Reader() {
         <button type="button" className="back-link" onClick={() => navigate("/")}>
           ← Library
         </button>
+        {history.length > 0 && (
+          <button
+            type="button"
+            className="history-back"
+            aria-label="Go back to previous chapter"
+            title="Go back to previous chapter"
+            onClick={() => {
+              const target = history[history.length - 1];
+              const wasPlaying = playbackState === "playing";
+              void loadChapter(target, { autoplay: wasPlaying, isBack: true });
+            }}
+          >
+            ↩ Back
+          </button>
+        )}
         {chapters && chapters.length > 0 && (
           <select
             className="chapter-jump"
